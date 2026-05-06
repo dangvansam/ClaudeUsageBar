@@ -321,7 +321,8 @@ class UsageManager: ObservableObject {
     @Published var lastUpdated: Date = Date()
     @Published var isLoading: Bool = false
     @Published var errorMessage: String?
-    @Published var notificationsEnabled: Bool = true
+    @Published var usageNotificationsEnabled: Bool = true
+    @Published var statusNotificationsEnabled: Bool = true
     @Published var openAtLogin: Bool = false
     @Published var hasWeeklySonnet: Bool = false
     @Published var hasFetchedData: Bool = false
@@ -352,12 +353,29 @@ class UsageManager: ObservableObject {
     }
 
     func loadSettings() {
-        notificationsEnabled = UserDefaults.standard.bool(forKey: "notifications_enabled")
-        // Default to true if not set
-        if !UserDefaults.standard.bool(forKey: "has_set_notifications") {
-            notificationsEnabled = true
-            UserDefaults.standard.set(true, forKey: "has_set_notifications")
+        // Migrate from legacy single notifications_enabled flag (pre-v1.1) to split flags
+        let hasUsageKey  = UserDefaults.standard.object(forKey: "usage_notifications_enabled")  != nil
+        let hasStatusKey = UserDefaults.standard.object(forKey: "status_notifications_enabled") != nil
+
+        if !hasUsageKey || !hasStatusKey {
+            let legacyHasKey = UserDefaults.standard.object(forKey: "notifications_enabled") != nil
+            let legacyValue  = legacyHasKey ? UserDefaults.standard.bool(forKey: "notifications_enabled") : true
+            if !hasUsageKey {
+                usageNotificationsEnabled = legacyValue
+                UserDefaults.standard.set(legacyValue, forKey: "usage_notifications_enabled")
+            }
+            if !hasStatusKey {
+                statusNotificationsEnabled = legacyValue
+                UserDefaults.standard.set(legacyValue, forKey: "status_notifications_enabled")
+            }
         }
+        if hasUsageKey {
+            usageNotificationsEnabled = UserDefaults.standard.bool(forKey: "usage_notifications_enabled")
+        }
+        if hasStatusKey {
+            statusNotificationsEnabled = UserDefaults.standard.bool(forKey: "status_notifications_enabled")
+        }
+
         openAtLogin = UserDefaults.standard.bool(forKey: "open_at_login")
         lastNotifiedThreshold = UserDefaults.standard.integer(forKey: "last_notified_threshold")
         // Default shortcut to enabled if not previously set
@@ -369,7 +387,8 @@ class UsageManager: ObservableObject {
     }
 
     func saveSettings() {
-        UserDefaults.standard.set(notificationsEnabled, forKey: "notifications_enabled")
+        UserDefaults.standard.set(usageNotificationsEnabled,  forKey: "usage_notifications_enabled")
+        UserDefaults.standard.set(statusNotificationsEnabled, forKey: "status_notifications_enabled")
         UserDefaults.standard.set(openAtLogin, forKey: "open_at_login")
         UserDefaults.standard.set(shortcutEnabled, forKey: "shortcut_enabled")
         UserDefaults.standard.synchronize()
@@ -623,10 +642,10 @@ class UsageManager: ObservableObject {
     }
 
     func checkNotificationThresholds(percentage: Int) {
-        NSLog("🔔 Checking notifications: percentage=\(percentage)%, enabled=\(notificationsEnabled), lastNotified=\(lastNotifiedThreshold)%")
+        NSLog("🔔 Checking notifications: percentage=\(percentage)%, enabled=\(usageNotificationsEnabled), lastNotified=\(lastNotifiedThreshold)%")
 
-        guard notificationsEnabled else {
-            NSLog("⚠️ Notifications disabled")
+        guard usageNotificationsEnabled else {
+            NSLog("⚠️ Usage notifications disabled")
             return
         }
 
@@ -880,7 +899,7 @@ class StatusManager: ObservableObject {
     }
 
     private func notifyStatusChange(to indicator: String, description: String) {
-        guard UserDefaults.standard.bool(forKey: "notifications_enabled") else { return }
+        guard UserDefaults.standard.bool(forKey: "status_notifications_enabled") else { return }
 
         let notification = NSUserNotification()
         if indicator == "none" {
@@ -989,7 +1008,9 @@ class UpdateManager: ObservableObject {
                 }
 
                 let lastNotified = UserDefaults.standard.string(forKey: "last_notified_update_version")
-                if lastNotified != version, UserDefaults.standard.bool(forKey: "notifications_enabled") {
+                // Update notifications fire regardless of usage/status toggles — they're
+                // version-once and tied to user-initiated upgrade flow, not noise.
+                if lastNotified != version {
                     let n = NSUserNotification()
                     n.title = "ClaudeUsageBar \(version) is available"
                     n.informativeText = title
@@ -1586,16 +1607,34 @@ struct UsageView: View {
 
                     VStack(alignment: .leading, spacing: 8) {
                         Toggle(isOn: Binding(
-                            get: { usageManager.notificationsEnabled },
+                            get: { usageManager.usageNotificationsEnabled },
                             set: { newValue in
-                                usageManager.notificationsEnabled = newValue
+                                usageManager.usageNotificationsEnabled = newValue
                                 usageManager.saveSettings()
                             }
                         )) {
                             VStack(alignment: .leading, spacing: 2) {
-                                Text("Enable Notifications")
+                                Text("Enable Usage Notifications")
                                     .font(.caption)
                                 Text("Get alerts at 25%, 50%, 75%,\nand 90% session usage")
+                                    .font(.caption2)
+                                    .foregroundColor(.secondary)
+                                    .fixedSize(horizontal: false, vertical: true)
+                            }
+                        }
+                        .toggleStyle(.checkbox)
+
+                        Toggle(isOn: Binding(
+                            get: { usageManager.statusNotificationsEnabled },
+                            set: { newValue in
+                                usageManager.statusNotificationsEnabled = newValue
+                                usageManager.saveSettings()
+                            }
+                        )) {
+                            VStack(alignment: .leading, spacing: 2) {
+                                Text("Enable Status Notifications")
+                                    .font(.caption)
+                                Text("Get alerts when tracked Claude services have an outage")
                                     .font(.caption2)
                                     .foregroundColor(.secondary)
                                     .fixedSize(horizontal: false, vertical: true)

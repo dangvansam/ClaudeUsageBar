@@ -62,16 +62,27 @@ echo -n "APPL????" > "$APP_PATH/Contents/PkgInfo"
 # Set proper permissions first
 chmod 755 "$APP_PATH/Contents/MacOS/ClaudeUsageBar"
 
-# Clean extended attributes before signing
+# Clean any "detritus" that codesign rejects: extended attributes, ._files, .DS_Store
 xattr -cr "$APP_PATH"
+find "$APP_PATH" -name '._*' -delete 2>/dev/null
+find "$APP_PATH" -name '.DS_Store' -delete 2>/dev/null
+dot_clean "$APP_PATH" 2>/dev/null
 
-# Sign with Developer ID certificate
+# Sign with Developer ID certificate. NEVER silently fall back to ad-hoc — that
+# fails notarization later. If real signing fails, error out loudly.
 DEVELOPER_ID="Developer ID Application: Linkko Technology Pte Ltd (Q467HQ5432)"
-if codesign --force --deep --options runtime --sign "$DEVELOPER_ID" "$APP_PATH" 2>/dev/null; then
+if codesign --force --deep --options runtime --sign "$DEVELOPER_ID" "$APP_PATH"; then
     echo "✅ App signed with Developer ID"
+    if codesign --verify --verbose=2 "$APP_PATH" 2>&1 | grep -q "valid on disk"; then
+        echo "✅ Signature verified"
+    else
+        echo "❌ Signature verification failed — fix before shipping" >&2
+        exit 1
+    fi
 else
-    echo "⚠️  Falling back to ad-hoc signature"
-    codesign --force --deep --sign - "$APP_PATH"
+    echo "❌ Developer ID signing failed. NOT falling back to ad-hoc (would break notarization)." >&2
+    echo "   Fix the cause above (often: stale xattrs / ._files / cert not in keychain) and re-run." >&2
+    exit 1
 fi
 
 echo "Build successful!"
