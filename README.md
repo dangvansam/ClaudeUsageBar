@@ -132,7 +132,7 @@ If you find this useful, consider:
 ## 🔗 Other projects
 
 - **Mediaboost - Guaranteed PR feature:** [Mediaboost](https://mediaboost.press)
-- **Scalepages - Programmatic SEO:** [Scalepages](https://scalepages.co)
+- **CheckWorth - AI net worth estimates from LinkedIn:** [CheckWorth](https://checkworth.app)
 
 ---
 
