@@ -53,10 +53,14 @@ class AppDelegate: NSObject, NSApplicationDelegate {
         statusManager.fetch()
         updateManager.fetch()
 
-        // Set up timer to refresh every 5 minutes
+        // Usage + Anthropic status are time-sensitive — poll every 5 min.
         Timer.scheduledTimer(withTimeInterval: 300, repeats: true) { _ in
             self.usageManager.fetchUsage()
             self.statusManager.fetch()
+        }
+
+        // App updates are infrequent (new release at most weekly) — poll every 3 hours.
+        Timer.scheduledTimer(withTimeInterval: 3 * 3600, repeats: true) { _ in
             self.updateManager.fetch()
         }
 

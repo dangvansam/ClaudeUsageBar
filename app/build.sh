@@ -4,7 +4,9 @@
 
 echo "Building ClaudeUsageBar..."
 
-# Create build directory
+# Create fresh build directory (delete any stale build to avoid accumulated xattrs
+# from prior signs, which can cause "resource fork / detritus" errors on codesign).
+rm -rf build
 mkdir -p build
 
 # Create app bundle structure first

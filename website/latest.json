@@ -1,7 +1,7 @@
 {
-  "version": "1.2",
-  "title": "Better notifications + improved cookie setup link",
-  "description": "Separate toggles for Usage vs Status notifications, a clickable tutorial link inside the cookie setup, and a behind-the-scenes infra fix so future versions cost nothing to run. Highly recommended upgrade.",
+  "version": "1.2.1",
+  "title": "Smaller footprint update",
+  "description": "Reduces background network usage by checking for new versions every 3 hours instead of every 5 minutes. Usage and Claude status still refresh every 5 minutes as before.",
   "buttons": [
     {
       "label": "Download",
