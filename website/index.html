@@ -533,6 +533,28 @@
       color: var(--text-muted);
     }
 
+    .usage-status-row {
+      display: flex;
+      align-items: center;
+      gap: 8px;
+      padding: 10px 0;
+      border-top: 1px solid var(--border);
+      font-size: 12px;
+      color: var(--text-secondary);
+    }
+
+    .usage-status-dot {
+      width: 8px;
+      height: 8px;
+      border-radius: 50%;
+      flex-shrink: 0;
+      transition: background-color 0.3s;
+    }
+
+    .usage-status-dot.green  { background: #21c55d; }
+    .usage-status-dot.orange { background: #ff8c42; }
+    .usage-status-dot.red    { background: #ff3b30; }
+
     .usage-popup-footer {
       display: flex;
       justify-content: space-between;
@@ -1173,6 +1195,11 @@
                 <span class="usage-section-percent" id="weeklyPercent">82% used</span>
               </div>
 
+              <div class="usage-status-row" id="statusRow">
+                <span class="usage-status-dot green" id="statusDot"></span>
+                <span id="statusLabel">All Claude services operational</span>
+              </div>
+
               <div class="usage-popup-footer">
                 <span id="lastUpdated">Last updated: 11:22 AM</span>
                 <span class="usage-popup-refresh" id="refreshBtn" onclick="refreshUsage()">Refresh</span>
@@ -1221,12 +1248,11 @@
       <div class="feature-card">
         <div class="feature-icon">
           <svg viewBox="0 0 24 24" fill="none" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
-            <circle cx="12" cy="12" r="10"/>
-            <polyline points="12 6 12 12 16 14"/>
+            <path d="M22 12h-4l-3 9L9 3l-3 9H2"/>
           </svg>
         </div>
-        <h3>Reset Countdown</h3>
-        <p>Always know exactly when your usage resets. Plan your work around your available capacity.</p>
+        <h3>Live Claude status</h3>
+        <p>Know when Claude.ai, the API, or Code is down. Color-coded indicator in the popup with smart alerts for the services you use.</p>
       </div>
 
       <div class="feature-card">
@@ -1398,6 +1424,26 @@
       // Update menu bar percentage display
       const menuPercent = document.querySelector('.menu-item[style]');
       if (menuPercent) menuPercent.textContent = sessionPercent + '%';
+
+      // Randomize Claude service status: 50% green, 35% orange, 15% red
+      const statusDot = document.getElementById('statusDot');
+      const statusLabel = document.getElementById('statusLabel');
+      if (statusDot && statusLabel) {
+        const roll = Math.random();
+        let color, text;
+        if (roll < 0.50) {
+          color = 'green';
+          text = 'All Claude services operational';
+        } else if (roll < 0.85) {
+          color = 'orange';
+          text = 'Claude API: degraded performance';
+        } else {
+          color = 'red';
+          text = 'Multiple service outages';
+        }
+        statusDot.className = 'usage-status-dot ' + color;
+        statusLabel.textContent = text;
+      }
 
       // Update last updated time
       updateLastUpdatedTime();
