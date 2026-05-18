@@ -1,0 +1,489 @@
+<!DOCTYPE html>
+<html lang="en" style="background-color: #0d0d0f;">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <meta name="theme-color" content="#0d0d0f">
+  <meta name="color-scheme" content="dark">
+  <link rel="icon" type="image/svg+xml" href="favicon.svg">
+  <link rel="apple-touch-icon" href="apple-touch-icon.png">
+  <link rel="canonical" href="https://claudeusagebar.com/status">
+  <title>Claude status — ClaudeUsageBar</title>
+  <meta name="description" content="Live Claude service status. Track only the services that matter to you — claude.ai, the API, Claude Code, Console, Cowork, or Government.">
+  <meta property="og:type" content="website">
+  <meta property="og:url" content="https://claudeusagebar.com/status">
+  <meta property="og:title" content="Live Claude service status">
+  <meta property="og:description" content="Real-time from status.claude.com. Track only what you use.">
+  <meta property="og:image" content="https://claudeusagebar.com/og-image.png">
+  <meta name="twitter:card" content="summary_large_image">
+  <meta name="twitter:title" content="Live Claude service status">
+  <meta name="twitter:description" content="Real-time from status.claude.com. Track only what you use.">
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+  <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&display=swap" rel="stylesheet">
+  <style>
+    :root {
+      --claude-orange: #da7756;
+      --bg-dark: #0d0d0f;
+      --bg-card: #18181b;
+      --bg-card-hover: #1f1f23;
+      --text-primary: #fafafa;
+      --text-secondary: #a1a1aa;
+      --text-muted: #71717a;
+      --border: #27272a;
+    }
+    * { margin: 0; padding: 0; box-sizing: border-box; }
+    html { scroll-behavior: smooth; background-color: #0d0d0f !important; }
+    body {
+      font-family: 'Inter', -apple-system, BlinkMacSystemFont, sans-serif;
+      background-color: #0d0d0f !important;
+      color: var(--text-primary);
+      line-height: 1.6;
+      min-height: 100vh;
+    }
+    a { color: inherit; text-decoration: none; }
+
+    /* Nav */
+    nav {
+      position: sticky; top: 0; z-index: 50;
+      background: rgba(13, 13, 15, 0.85);
+      backdrop-filter: blur(20px);
+      border-bottom: 1px solid var(--border);
+      padding: 16px 32px;
+    }
+    .nav-content {
+      max-width: 1200px; margin: 0 auto;
+      display: flex; align-items: center; justify-content: space-between;
+    }
+    .logo { display: flex; align-items: center; gap: 10px; font-weight: 700; font-size: 17px; color: var(--text-primary); }
+    .logo-icon { width: 28px; height: 28px; background: var(--claude-orange); border-radius: 8px; display: flex; align-items: center; justify-content: center; }
+    .logo-icon svg { width: 16px; height: 16px; }
+    .nav-links { display: flex; gap: 28px; align-items: center; }
+    .nav-links a { font-size: 14px; color: var(--text-secondary); transition: color .2s; }
+    .nav-links a:hover { color: var(--text-primary); }
+    .nav-cta { background: var(--claude-orange); color: white !important; padding: 8px 16px; border-radius: 8px; font-weight: 600; }
+    .nav-cta:hover { background: #b85a42; }
+
+    /* Page */
+    .page {
+      max-width: 720px; margin: 0 auto; padding: 64px 24px 80px;
+    }
+    h1 {
+      font-size: clamp(28px, 5vw, 44px);
+      font-weight: 700;
+      letter-spacing: -0.02em;
+      margin-bottom: 12px;
+    }
+    .sub {
+      color: var(--text-secondary);
+      font-size: 16px;
+      margin-bottom: 40px;
+    }
+
+    /* Status card */
+    .status-card {
+      background: var(--bg-card);
+      border: 1px solid var(--border);
+      border-radius: 16px;
+      padding: 24px;
+      margin-bottom: 24px;
+    }
+    .status-header {
+      display: flex; align-items: center; gap: 12px;
+    }
+    .status-dot {
+      width: 14px; height: 14px; border-radius: 50%;
+      transition: background-color .3s;
+      flex-shrink: 0;
+    }
+    .status-dot.green   { background: #21c55d; box-shadow: 0 0 0 4px rgba(33,197,93,.15); }
+    .status-dot.yellow,
+    .status-dot.minor   { background: #facc15; box-shadow: 0 0 0 4px rgba(250,204,21,.15); }
+    .status-dot.orange,
+    .status-dot.major   { background: #ff8c42; box-shadow: 0 0 0 4px rgba(255,140,66,.15); }
+    .status-dot.red,
+    .status-dot.critical{ background: #ff3b30; box-shadow: 0 0 0 4px rgba(255,59,48,.15); }
+    .status-dot.gray    { background: var(--text-muted); }
+    .status-label {
+      font-size: 18px; font-weight: 600;
+    }
+    .status-checked {
+      margin-top: 6px;
+      color: var(--text-muted);
+      font-size: 12px;
+    }
+    .status-source-link {
+      display: inline-block;
+      margin-top: 14px;
+      color: var(--claude-orange);
+      font-size: 13px;
+      text-decoration: none;
+    }
+    .status-source-link:hover { text-decoration: underline; }
+
+    /* Incident card */
+    .incidents { display: flex; flex-direction: column; gap: 12px; margin-bottom: 24px; }
+    .incident {
+      background: rgba(255,140,66,.06);
+      border: 1px solid rgba(255,140,66,.25);
+      border-radius: 12px;
+      padding: 16px 18px;
+    }
+    .incident-title {
+      font-weight: 600; font-size: 15px; margin-bottom: 8px;
+    }
+    .incident-meta {
+      display: flex; align-items: center; gap: 8px; margin-bottom: 10px;
+      flex-wrap: wrap;
+    }
+    .incident-badge {
+      font-size: 10px; font-weight: 700; letter-spacing: 0.04em;
+      padding: 2px 8px; border-radius: 4px; text-transform: uppercase;
+      color: white;
+    }
+    .incident-badge.investigating { background: #d9534f; }
+    .incident-badge.identified    { background: #f0ad4e; }
+    .incident-badge.monitoring    { background: #5bc0de; }
+    .incident-badge.resolved      { background: #5cb85c; }
+    .incident-time {
+      color: var(--text-muted); font-size: 12px;
+    }
+    .incident-body {
+      color: var(--text-secondary); font-size: 13px;
+    }
+
+    /* Tracked services */
+    .panel {
+      background: var(--bg-card);
+      border: 1px solid var(--border);
+      border-radius: 16px;
+      padding: 24px;
+      margin-bottom: 24px;
+    }
+    .panel-title {
+      font-size: 14px; font-weight: 600; color: var(--text-secondary);
+      letter-spacing: 0.04em; text-transform: uppercase;
+      margin-bottom: 16px;
+    }
+    .service-row {
+      display: flex; align-items: center; gap: 12px;
+      padding: 10px 0; border-top: 1px solid var(--border);
+    }
+    .service-row:first-of-type { border-top: 0; padding-top: 0; }
+    .service-row:last-of-type  { padding-bottom: 0; }
+    .service-row label {
+      display: flex; align-items: center; gap: 10px;
+      cursor: pointer; flex: 1; font-size: 14px;
+    }
+    .service-row input[type=checkbox] {
+      width: 16px; height: 16px; accent-color: var(--claude-orange);
+      cursor: pointer;
+    }
+    .service-row .service-state {
+      font-size: 11px; color: var(--text-muted);
+      padding: 3px 8px; border: 1px solid var(--border); border-radius: 999px;
+    }
+    .service-state.bad { color: #ff8c42; border-color: rgba(255,140,66,.4); }
+
+    /* CTA */
+    .cta {
+      background: linear-gradient(135deg, rgba(218,119,86,.10), rgba(218,119,86,.04));
+      border: 1px solid rgba(218,119,86,.3);
+      border-radius: 16px;
+      padding: 28px;
+      text-align: center;
+    }
+    .cta h2 {
+      font-size: 20px; font-weight: 700; margin-bottom: 8px;
+    }
+    .cta p {
+      color: var(--text-secondary); font-size: 14px; margin-bottom: 18px;
+    }
+    .cta a {
+      display: inline-block;
+      background: var(--claude-orange);
+      color: white !important;
+      padding: 12px 22px;
+      border-radius: 10px;
+      font-weight: 600;
+      font-size: 14px;
+      transition: background .2s, transform .1s;
+    }
+    .cta a:hover { background: #b85a42; }
+    .cta a:active { transform: translateY(1px); }
+
+    /* Empty */
+    .empty {
+      color: var(--text-muted);
+      font-size: 14px;
+      text-align: center;
+      padding: 24px;
+      background: var(--bg-card);
+      border: 1px dashed var(--border);
+      border-radius: 12px;
+      margin-bottom: 24px;
+    }
+
+    /* Footer */
+    footer {
+      border-top: 1px solid var(--border);
+      padding: 32px 24px;
+      text-align: center;
+      color: var(--text-muted);
+      font-size: 13px;
+    }
+    footer a { color: var(--text-secondary); margin: 0 12px; }
+    footer a:hover { color: var(--text-primary); }
+
+    @media (max-width: 640px) {
+      .nav-links a:not(.nav-cta) { display: none; }
+      .nav-links a.nav-cta { display: inline-block; }
+      .page { padding: 40px 16px 64px; }
+    }
+  </style>
+</head>
+<body>
+
+<nav>
+  <div class="nav-content">
+    <a href="/" class="logo">
+      <span class="logo-icon">
+        <svg viewBox="0 0 16 16" fill="none"><path d="M8 1L9 6L13 3L10 7L15 8L10 9L13 13L9 10L8 15L7 10L3 13L6 9L1 8L6 7L3 3L7 6L8 1Z" fill="white"/></svg>
+      </span>
+      <span>ClaudeUsageBar</span>
+    </a>
+    <div class="nav-links">
+      <a href="/">Home</a>
+      <a href="/blog/">Blog</a>
+      <a href="https://github.com/Artzainnn/ClaudeUsageBar" target="_blank">GitHub</a>
+      <a href="https://github.com/Artzainnn/ClaudeUsageBar/releases/latest/download/ClaudeUsageBar-Installer.dmg" class="nav-cta">Download</a>
+    </div>
+  </div>
+</nav>
+
+<main class="page">
+  <h1>Live Claude service status</h1>
+  <p class="sub">Real-time from <a href="https://status.claude.com" target="_blank" style="color:var(--claude-orange)">status.claude.com</a>. Pick which services matter to you below — the indicator above ignores the rest.</p>
+
+  <!-- Status summary -->
+  <section class="status-card">
+    <div class="status-header">
+      <span class="status-dot gray" id="statusDot"></span>
+      <div>
+        <div class="status-label" id="statusLabel">Loading status…</div>
+        <div class="status-checked" id="statusChecked">—</div>
+      </div>
+    </div>
+    <a class="status-source-link" href="https://status.claude.com" target="_blank">Open status.claude.com →</a>
+  </section>
+
+  <!-- Active incidents (rendered dynamically) -->
+  <section id="incidentsContainer"></section>
+
+  <!-- Tracked services -->
+  <section class="panel">
+    <div class="panel-title">Services to track</div>
+    <div id="servicesList"></div>
+  </section>
+
+  <!-- CTA -->
+  <section class="cta">
+    <h2>Get notified on your Mac</h2>
+    <p>ClaudeUsageBar runs in your menu bar and pings you the moment a tracked service goes down.</p>
+    <a href="https://github.com/Artzainnn/ClaudeUsageBar/releases/latest/download/ClaudeUsageBar-Installer.dmg" data-fast-goal="download_macos">Download for macOS</a>
+  </section>
+</main>
+
+<footer>
+  <a href="/">Home</a>
+  <a href="/blog/">Blog</a>
+  <a href="https://github.com/Artzainnn/ClaudeUsageBar" target="_blank">GitHub</a>
+  <a href="https://github.com/Artzainnn/ClaudeUsageBar/blob/main/LICENSE" target="_blank">License</a>
+</footer>
+
+<script>
+  const ENDPOINT = 'https://status.claude.com/api/v2/summary.json';
+  const STORAGE_KEY = 'cub_tracked_components';
+
+  let allComponents = []; // [{id, name, status}]
+  let selectedIds = null; // Set<string>
+  let incidents   = [];
+
+  // ---- localStorage helpers ----
+  function loadSelection() {
+    try {
+      const raw = localStorage.getItem(STORAGE_KEY);
+      if (raw) return new Set(JSON.parse(raw));
+    } catch (e) {}
+    return null;
+  }
+  function saveSelection() {
+    localStorage.setItem(STORAGE_KEY, JSON.stringify([...selectedIds]));
+  }
+
+  // ---- Severity mapping ----
+  const SEVERITY = {
+    operational: 0, under_maintenance: 1, degraded_performance: 1,
+    partial_outage: 2, major_outage: 3
+  };
+  function effectiveIndicator() {
+    const tracked = allComponents.filter(c => selectedIds.has(c.id));
+    const max = tracked.reduce((m, c) => Math.max(m, SEVERITY[c.status] ?? 0), 0);
+    return ['none','minor','major','critical'][max] || 'none';
+  }
+  function statusToColor(ind) {
+    return { none:'green', minor:'yellow', major:'orange', critical:'red' }[ind] || 'gray';
+  }
+  function componentLabel(s) {
+    return ({
+      degraded_performance: 'degraded',
+      partial_outage: 'partial outage',
+      major_outage: 'major outage',
+      under_maintenance: 'maintenance',
+      operational: 'operational'
+    })[s] || s;
+  }
+
+  // ---- Time helper ----
+  function relativeTime(d) {
+    const s = Math.floor((Date.now() - d.getTime()) / 1000);
+    if (s < 60)    return 'just now';
+    if (s < 3600)  { const m = Math.floor(s/60);   return `${m} min${m===1?'':'s'} ago`; }
+    if (s < 86400) { const h = Math.floor(s/3600); return `${h} hour${h===1?'':'s'} ago`; }
+    const d2 = Math.floor(s/86400); return `${d2} day${d2===1?'':'s'} ago`;
+  }
+
+  // ---- Fetch + render ----
+  async function refresh() {
+    try {
+      const res = await fetch(ENDPOINT, { cache: 'no-store' });
+      const j   = await res.json();
+
+      allComponents = (j.components || []).map(c => ({
+        id: c.id, name: c.name, status: c.status
+      }));
+
+      incidents = (j.incidents || []).filter(i =>
+        i.status !== 'resolved' && i.status !== 'postmortem'
+      ).map(i => ({
+        id: i.id,
+        name: i.name,
+        status: i.status,
+        body: (i.incident_updates && i.incident_updates[0] && i.incident_updates[0].body) || '',
+        updatedAt: (i.incident_updates && i.incident_updates[0] && i.incident_updates[0].created_at)
+          ? new Date(i.incident_updates[0].created_at) : null,
+        componentIds: (i.components || []).map(c => c.id)
+      }));
+
+      // First-run default: track everything except "Government"
+      if (selectedIds === null) {
+        const saved = loadSelection();
+        if (saved) {
+          selectedIds = saved;
+        } else {
+          selectedIds = new Set(
+            allComponents
+              .filter(c => !/government/i.test(c.name))
+              .map(c => c.id)
+          );
+        }
+      }
+
+      render(new Date());
+    } catch (err) {
+      console.error('status fetch failed', err);
+      document.getElementById('statusLabel').textContent = 'Could not reach status.claude.com';
+      document.getElementById('statusDot').className = 'status-dot gray';
+    }
+  }
+
+  function render(checkedAt) {
+    // Top status
+    const ind = effectiveIndicator();
+    const dot = document.getElementById('statusDot');
+    dot.className = 'status-dot ' + statusToColor(ind);
+
+    const label = document.getElementById('statusLabel');
+    label.textContent = ind === 'none'
+      ? 'All tracked Claude services operational'
+      : labelForIssue(ind);
+
+    document.getElementById('statusChecked').textContent =
+      `Last checked ${relativeTime(checkedAt)} · auto-refreshes every 60s`;
+
+    // Incidents — filter by tracked components (incidents w/ no components ⇒ global, show)
+    const filtered = incidents.filter(i =>
+      i.componentIds.length === 0 || i.componentIds.some(id => selectedIds.has(id))
+    );
+    renderIncidents(filtered);
+
+    // Services list
+    renderServices();
+  }
+
+  function labelForIssue() {
+    const affected = allComponents.filter(c => selectedIds.has(c.id) && c.status !== 'operational');
+    if (affected.length === 0) return 'Service degradation';
+    if (affected.length === 1) {
+      const short = affected[0].name.replace(/\s*\(.*?\)\s*$/, '');
+      return `${short}: ${componentLabel(affected[0].status)}`;
+    }
+    return `${affected.length} services affected`;
+  }
+
+  function renderIncidents(list) {
+    const c = document.getElementById('incidentsContainer');
+    if (!list.length) {
+      c.innerHTML = `<div class="empty">No active incidents on tracked services.</div>`;
+      return;
+    }
+    c.innerHTML = `<div class="incidents">${list.map(i => `
+      <div class="incident">
+        <div class="incident-title">${escapeHtml(i.name)}</div>
+        <div class="incident-meta">
+          <span class="incident-badge ${i.status}">${i.status}</span>
+          ${i.updatedAt ? `<span class="incident-time">Updated ${relativeTime(i.updatedAt)}</span>` : ''}
+        </div>
+        ${i.body ? `<div class="incident-body">${escapeHtml(i.body)}</div>` : ''}
+      </div>
+    `).join('')}</div>`;
+  }
+
+  function renderServices() {
+    const list = document.getElementById('servicesList');
+    list.innerHTML = allComponents.map(c => {
+      const tracked = selectedIds.has(c.id);
+      const isBad = c.status !== 'operational';
+      return `
+        <div class="service-row">
+          <label>
+            <input type="checkbox" ${tracked ? 'checked' : ''} data-id="${c.id}">
+            <span>${escapeHtml(c.name)}</span>
+          </label>
+          <span class="service-state ${isBad ? 'bad' : ''}">${componentLabel(c.status)}</span>
+        </div>
+      `;
+    }).join('');
+
+    list.querySelectorAll('input[type=checkbox]').forEach(input => {
+      input.addEventListener('change', () => {
+        const id = input.getAttribute('data-id');
+        if (input.checked) selectedIds.add(id);
+        else                selectedIds.delete(id);
+        saveSelection();
+        render(new Date());
+      });
+    });
+  }
+
+  function escapeHtml(s) {
+    return (s || '').replace(/[&<>"']/g, c => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));
+  }
+
+  // Initial fetch + auto-refresh every 60s
+  refresh();
+  setInterval(refresh, 60000);
+</script>
+
+</body>
+</html>
