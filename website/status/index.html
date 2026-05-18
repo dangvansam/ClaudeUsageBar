@@ -202,6 +202,36 @@
     }
     .service-state.bad { color: #ff8c42; border-color: rgba(255,140,66,.4); }
 
+    /* Service tooltip on hover (desktop only) */
+    @media (hover: hover) and (min-width: 881px) {
+      .service-row { position: relative; }
+      .service-row[data-tooltip]:not([data-tooltip=""])::before {
+        content: attr(data-tooltip);
+        position: absolute;
+        right: calc(100% + 14px);
+        top: 50%;
+        transform: translateY(-50%);
+        width: 240px;
+        background: #0f0f12;
+        color: var(--text-primary);
+        border: 1px solid rgba(218,119,86,.35);
+        border-radius: 10px;
+        padding: 11px 13px;
+        font-size: 12px;
+        line-height: 1.45;
+        font-weight: 400;
+        white-space: normal;
+        opacity: 0;
+        pointer-events: none;
+        transition: opacity .15s ease;
+        z-index: 100;
+        box-shadow: 0 12px 28px rgba(0,0,0,.45);
+      }
+      .service-row[data-tooltip]:not([data-tooltip=""]):hover::before {
+        opacity: 1;
+      }
+    }
+
     /* CTA section */
     .cta-section {
       max-width: 1100px; margin: 64px auto 0; padding: 0 24px 80px;
@@ -345,6 +375,22 @@
   const SUMMARY_URL   = 'https://status.claude.com/api/v2/summary.json';
   const INCIDENTS_URL = 'https://status.claude.com/api/v2/incidents.json';
   const STORAGE_KEY   = 'cub_tracked_components';
+
+  // Tooltip copy per service (matched by substring on the component name)
+  const SERVICE_TOOLTIPS = [
+    ['claude.ai',   '💬  The web and desktop chat interface where you talk to Claude.'],
+    ['Console',     '⚙️  Developer console: API keys, billing, model settings.'],
+    ['API',         '🔌  REST endpoints used by apps and integrations.'],
+    ['Claude Code', "💻  Anthropic's terminal coding agent (claude code)."],
+    ['Cowork',      '👥  Real-time collaborative Claude for teams.'],
+    ['Government',  '🏛️  Compliance-grade Claude for US government customers.'],
+  ];
+  function tooltipFor(name) {
+    for (const [key, txt] of SERVICE_TOOLTIPS) {
+      if (name.toLowerCase().includes(key.toLowerCase())) return txt;
+    }
+    return '';
+  }
 
   let allComponents = [];
   let selectedIds   = null;
@@ -552,8 +598,9 @@
     list.innerHTML = allComponents.map(c => {
       const tracked = selectedIds.has(c.id);
       const isBad = c.status !== 'operational';
+      const tip = tooltipFor(c.name);
       return `
-        <div class="service-row">
+        <div class="service-row" data-tooltip="${escapeHtml(tip)}">
           <label>
             <input type="checkbox" ${tracked ? 'checked' : ''} data-id="${c.id}">
             <span>${escapeHtml(c.name)}</span>
