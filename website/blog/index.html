@@ -269,6 +269,8 @@
       .footer-content { flex-direction: column; gap: 16px; text-align: center; }
     }
   </style>
+  <link rel="stylesheet" href="/nav-status.css">
+  <script src="/nav-status.js" defer></script>
 </head>
 <body>
   <div class="ambient"></div>
@@ -284,8 +286,7 @@
         <span class="logo-text">ClaudeUsageBar</span>
       </a>
       <div class="nav-links">
-        <a href="/status">Status</a>
-        <a href="/blog/" class="active">Blog</a>
+        <a href="/status" class="nav-status-pill loading" data-nav-status><span class="nav-status-dot loading" data-nav-status></span><span>Status</span></a>
         <a href="/#features">Features</a>
         <a href="/#faq">FAQ</a>
         <a href="https://github.com/Artzainnn/ClaudeUsageBar" target="_blank">GitHub</a>
@@ -302,7 +303,6 @@
   </nav>
   <div id="mobileMenu" class="mobile-menu">
     <a href="/status" onclick="document.getElementById('mobileMenu').classList.remove('active')">Status</a>
-    <a href="/blog/" onclick="document.getElementById('mobileMenu').classList.remove('active')">Blog</a>
     <a href="/#features" onclick="document.getElementById('mobileMenu').classList.remove('active')">Features</a>
     <a href="/#faq" onclick="document.getElementById('mobileMenu').classList.remove('active')">FAQ</a>
     <a href="https://github.com/Artzainnn/ClaudeUsageBar" target="_blank">GitHub</a>
@@ -406,6 +406,10 @@
   </div>
 
   <footer>
+    <div class="footer-cta-bar">
+      <a href="/status" class="footer-status-pill loading" data-nav-status><span class="footer-status-dot loading" data-nav-status></span><span id="footerStatusText">Status</span></a>
+      <a href="https://github.com/Artzainnn/ClaudeUsageBar/releases/latest/download/ClaudeUsageBar-Installer.dmg" class="footer-download-cta" data-fast-goal="download_macos">Free download</a>
+    </div>
     <div class="footer-content">
       <p class="footer-text">Built with care for the Claude & Claude Code community</p>
       <div class="footer-links">

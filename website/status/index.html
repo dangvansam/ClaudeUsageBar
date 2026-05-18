@@ -128,8 +128,8 @@
       padding: 16px 18px;
     }
     .incident.active {
-      background: rgba(255,140,66,.06);
-      border-color: rgba(255,140,66,.30);
+      background: rgba(180, 90, 40, .10);
+      border-color: rgba(180, 90, 40, .35);
     }
     .incident-title  { font-weight: 600; font-size: 15px; margin-bottom: 8px; }
     .incident-meta   {
@@ -307,6 +307,8 @@
       .page { padding: 40px 16px 24px; }
     }
   </style>
+  <link rel="stylesheet" href="/nav-status.css">
+  <script src="/nav-status.js" defer></script>
 </head>
 <body>
 
@@ -320,7 +322,6 @@
     </a>
     <div class="nav-links">
       <a href="/">Home</a>
-      <a href="/blog/">Blog</a>
       <a href="https://github.com/Artzainnn/ClaudeUsageBar" target="_blank">GitHub</a>
       <a href="https://github.com/Artzainnn/ClaudeUsageBar/releases/latest/download/ClaudeUsageBar-Installer.dmg" class="nav-cta">Download</a>
     </div>
@@ -376,6 +377,10 @@
 </section>
 
 <footer>
+    <div class="footer-cta-bar">
+      <a href="/status" class="footer-status-pill loading" data-nav-status><span class="footer-status-dot loading" data-nav-status></span><span id="footerStatusText">Status</span></a>
+      <a href="https://github.com/Artzainnn/ClaudeUsageBar/releases/latest/download/ClaudeUsageBar-Installer.dmg" class="footer-download-cta" data-fast-goal="download_macos">Free download</a>
+    </div>
   <a href="/">Home</a>
   <a href="/blog/">Blog</a>
   <a href="https://github.com/Artzainnn/ClaudeUsageBar" target="_blank">GitHub</a>
@@ -407,8 +412,6 @@
   let selectedIds   = null;
   let recentIncidents = [];
 
-  const DEMO = new URLSearchParams(location.search).get('demo');
-
   function loadSelection() {
     try {
       const raw = localStorage.getItem(STORAGE_KEY);
@@ -417,7 +420,6 @@
     return null;
   }
   function saveSelection() {
-    if (DEMO) return; // Demo selections are ephemeral — don't pollute real prefs
     localStorage.setItem(STORAGE_KEY, JSON.stringify([...selectedIds]));
   }
 
@@ -453,8 +455,6 @@
 
   async function refresh() {
     try {
-      if (DEMO) return loadDemoData();
-
       const [sumRes, incRes] = await Promise.all([
         fetch(SUMMARY_URL,   { cache: 'no-store' }),
         fetch(INCIDENTS_URL, { cache: 'no-store' })
@@ -499,64 +499,6 @@
           .map(c => c.id)
       );
     }
-  }
-
-  function loadDemoData() {
-    const ids = {
-      ai: 'demo-ai', console: 'demo-console', api: 'demo-api',
-      code: 'demo-code', cowork: 'demo-cowork', gov: 'demo-gov'
-    };
-    allComponents = [
-      { id: ids.ai,      name: 'claude.ai',                            status: 'degraded_performance' },
-      { id: ids.console, name: 'Claude Console (platform.claude.com)', status: 'operational' },
-      { id: ids.api,     name: 'Claude API (api.anthropic.com)',       status: 'partial_outage' },
-      { id: ids.code,    name: 'Claude Code',                          status: 'operational' },
-      { id: ids.cowork,  name: 'Claude Cowork',                        status: 'operational' },
-      { id: ids.gov,     name: 'Claude for Government',                status: 'operational' },
-    ];
-    recentIncidents = [
-      // Active — one of each status
-      {
-        id: 'demo-1', name: 'Elevated errors on Claude Opus 4.5 and Sonnet 4.5',
-        status: 'investigating',
-        body: 'We are currently investigating elevated error rates on Claude Opus 4.5 and Sonnet 4.5. We will provide an update shortly.',
-        updatedAt: new Date(Date.now() - 12 * 60 * 1000),
-        componentIds: [ids.api, ids.ai],
-      },
-      {
-        id: 'demo-2', name: 'Increased response times on Claude Sonnet 4.5',
-        status: 'identified',
-        body: 'We have identified the root cause as a regression in our request routing layer. A fix is being prepared.',
-        updatedAt: new Date(Date.now() - 18 * 60 * 1000),
-        componentIds: [ids.api],
-      },
-      {
-        id: 'demo-3', name: 'Brief disruption to Claude Console sign-in',
-        status: 'monitoring',
-        body: 'A fix has been deployed and we are monitoring the results.',
-        updatedAt: new Date(Date.now() - 25 * 60 * 1000),
-        componentIds: [ids.console],
-      },
-      // Recent history (resolved)
-      {
-        id: 'demo-4', name: 'Elevated errors on Claude Opus 4.5',
-        status: 'resolved',
-        body: 'This incident has been resolved.',
-        updatedAt: new Date(Date.now() - 26 * 3600 * 1000),
-        componentIds: [ids.api],
-      },
-      {
-        id: 'demo-5', name: 'Claude API: regional connectivity issue',
-        status: 'resolved',
-        body: 'This incident has been resolved.',
-        updatedAt: new Date(Date.now() - 48 * 3600 * 1000),
-        componentIds: [ids.api],
-      },
-    ];
-    // In demo mode, ignore user's localStorage selection and track everything
-    // so the demo incidents are always visible.
-    selectedIds = new Set(allComponents.map(c => c.id));
-    render(new Date());
   }
 
   function render(checkedAt) {
@@ -641,7 +583,7 @@
   }
 
   refresh();
-  if (!DEMO) setInterval(refresh, 60000);
+  setInterval(refresh, 60000);
 </script>
 
 </body>
