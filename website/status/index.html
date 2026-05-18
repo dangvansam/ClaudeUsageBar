@@ -143,7 +143,7 @@
     }
     .incident-badge.investigating { background: #d9534f; }
     .incident-badge.identified    { background: #f0ad4e; }
-    .incident-badge.monitoring    { background: #5bc0de; }
+    .incident-badge.monitoring    { background: #4f7a8c; }
     .incident-badge.resolved      { background: #4a4a52; }
     .incident-badge.postmortem    { background: #6c757d; }
     .incident-time { color: var(--text-muted); font-size: 12px; }
@@ -522,32 +522,18 @@
         componentIds: [ids.api, ids.ai],
       },
       {
-        id: 'demo-2', name: 'Increased latency in Claude Code',
-        status: 'monitoring',
-        body: 'A fix has been deployed and we are monitoring the results.',
-        updatedAt: new Date(Date.now() - 25 * 60 * 1000),
-        componentIds: [ids.code],
+        id: 'demo-2', name: 'Increased response times on Claude Sonnet 4.5',
+        status: 'identified',
+        body: 'We have identified the root cause as a regression in our request routing layer. A fix is being prepared.',
+        updatedAt: new Date(Date.now() - 18 * 60 * 1000),
+        componentIds: [ids.api],
       },
       {
         id: 'demo-3', name: 'Brief disruption to Claude Console sign-in',
-        status: 'resolved',
-        body: 'This incident has been resolved.',
-        updatedAt: new Date(Date.now() - 3 * 3600 * 1000),
+        status: 'monitoring',
+        body: 'A fix has been deployed and we are monitoring the results.',
+        updatedAt: new Date(Date.now() - 25 * 60 * 1000),
         componentIds: [ids.console],
-      },
-      {
-        id: 'demo-4', name: 'Elevated errors on Claude Opus 4.5',
-        status: 'resolved',
-        body: 'This incident has been resolved.',
-        updatedAt: new Date(Date.now() - 26 * 3600 * 1000),
-        componentIds: [ids.api],
-      },
-      {
-        id: 'demo-5', name: 'Claude API: regional connectivity issue',
-        status: 'resolved',
-        body: 'This incident has been resolved.',
-        updatedAt: new Date(Date.now() - 48 * 3600 * 1000),
-        componentIds: [ids.api],
       },
     ];
     ensureSelectionInitialized();
