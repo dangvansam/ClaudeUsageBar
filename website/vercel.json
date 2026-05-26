@@ -1,0 +1,5 @@
+{
+  "rewrites": [
+    { "source": "/latest.json", "destination": "/latest-v1.json" }
+  ]
+}
