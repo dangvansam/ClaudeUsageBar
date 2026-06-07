@@ -183,9 +183,18 @@ fn refresh_usage(state: &SharedState, claude: &ClaudeClient) {
             st.last_error = None;
             st.loading = false;
             if st.settings.usage_notifications_enabled {
-                if let Some(new_threshold) =
-                    Notifier::maybe_notify_threshold(percent, st.settings.last_notified_threshold)
-                {
+                let reset = st
+                    .usage
+                    .as_ref()
+                    .and_then(|u| u.session.resets_at)
+                    .map(format_reset_label);
+                let template = st.settings.notif_message_template.clone();
+                if let Some(new_threshold) = Notifier::maybe_notify_threshold(
+                    percent,
+                    st.settings.last_notified_threshold,
+                    &template,
+                    reset.as_deref(),
+                ) {
                     st.settings.last_notified_threshold = new_threshold;
                     let _ = Storage::save_settings(&st.settings);
                 } else {
@@ -287,8 +296,29 @@ fn run_ui(
         "ClaudeUsageBar",
         options,
         Box::new(move |cc| {
-            init_tray_and_hotkey(cc.egui_ctx.clone(), tray_state.clone(), want_quit_for_closure.clone());
-            Ok(Box::new(PopupApp::new(state.clone(), cmd_tx.clone(), visible.clone())))
+            let app = PopupApp::new(state.clone(), cmd_tx.clone(), visible.clone());
+
+            #[cfg(target_os = "linux")]
+            {
+                init_tray_and_hotkey(
+                    cc.egui_ctx.clone(),
+                    tray_state.clone(),
+                    want_quit_for_closure.clone(),
+                );
+                Ok(Box::new(app))
+            }
+
+            // On Windows/macOS the tray icon and global hotkey hold thread-affine
+            // handles, so they live on this UI thread and are pumped each frame.
+            #[cfg(not(target_os = "linux"))]
+            {
+                let _ = &cc;
+                let app = match build_frame_pump(tray_state.clone(), want_quit_for_closure.clone()) {
+                    Some(hook) => app.with_frame_hook(hook),
+                    None => app,
+                };
+                Ok(Box::new(app))
+            }
         }),
     );
 
@@ -335,13 +365,19 @@ fn init_tray_and_hotkey(ctx: eframe::egui::Context, shared: TrayShared, want_qui
         .expect("spawn tray thread");
 }
 
+/// Build the per-frame tray + hotkey pump used on Windows/macOS, where these
+/// handles are thread-affine and must live on the UI thread. Returns `None` if
+/// the tray could not be created (the app still runs without a tray icon).
 #[cfg(not(target_os = "linux"))]
-fn init_tray_and_hotkey(ctx: eframe::egui::Context, shared: TrayShared, want_quit: Arc<AtomicBool>) {
+fn build_frame_pump(
+    shared: TrayShared,
+    want_quit: Arc<AtomicBool>,
+) -> Option<Box<dyn FnMut(&eframe::egui::Context)>> {
     let tray = match TrayController::build() {
         Ok(t) => t,
         Err(e) => {
             log::error!("tray build failed: {}", e);
-            return;
+            return None;
         }
     };
     let mut hotkey = HotkeyController::new().ok();
@@ -349,12 +385,34 @@ fn init_tray_and_hotkey(ctx: eframe::egui::Context, shared: TrayShared, want_qui
     if let Some(hk) = hotkey.as_mut() {
         let _ = hk.set_enabled(initial_hotkey);
     }
-    std::thread::Builder::new()
-        .name("tray-events".into())
-        .spawn(move || event_pump_loop(ctx, shared, tray, hotkey, want_quit))
-        .expect("spawn tray events thread");
+    let mut pump = PumpState::new(&shared);
+    Some(Box::new(move |ctx: &eframe::egui::Context| {
+        pump_once(ctx, &shared, &tray, &mut hotkey, &want_quit, &mut pump);
+    }))
 }
 
+/// Mutable state carried between pump iterations.
+struct PumpState {
+    last_settings_hotkey: bool,
+    last_tray_render: Option<(
+        Option<u8>,
+        String,
+        bool,
+        crate::storage::TrayIconStyle,
+        crate::storage::Accent,
+    )>,
+}
+
+impl PumpState {
+    fn new(shared: &TrayShared) -> Self {
+        Self {
+            last_settings_hotkey: shared.state.lock().settings.hotkey_enabled,
+            last_tray_render: None,
+        }
+    }
+}
+
+#[cfg(target_os = "linux")]
 fn event_pump_loop(
     ctx: eframe::egui::Context,
     shared: TrayShared,
@@ -362,88 +420,127 @@ fn event_pump_loop(
     mut hotkey: Option<HotkeyController>,
     want_quit: Arc<AtomicBool>,
 ) {
+    let mut pump = PumpState::new(&shared);
+    while !want_quit.load(Ordering::SeqCst) {
+        std::thread::sleep(std::time::Duration::from_millis(80));
+        pump_once(&ctx, &shared, &tray, &mut hotkey, &want_quit, &mut pump);
+        while gtk::events_pending() {
+            gtk::main_iteration_do(false);
+        }
+    }
+}
+
+/// One non-blocking poll of tray menu, tray click, and hotkey event channels,
+/// plus a refresh of the tray icon/tooltip when the usage state changes.
+fn pump_once(
+    ctx: &eframe::egui::Context,
+    shared: &TrayShared,
+    tray: &TrayController,
+    hotkey: &mut Option<HotkeyController>,
+    want_quit: &Arc<AtomicBool>,
+    pump: &mut PumpState,
+) {
     let menu_rx = MenuEvent::receiver();
     let tray_rx = TrayIconEvent::receiver();
     let hotkey_rx = GlobalHotKeyEvent::receiver();
 
-    let mut last_settings_hotkey = shared.state.lock().settings.hotkey_enabled;
-    let mut last_tray_render: Option<(Option<u8>, String)> = None;
-
-    while !want_quit.load(Ordering::SeqCst) {
-        std::thread::sleep(std::time::Duration::from_millis(80));
-
-        if let Ok(ev) = menu_rx.try_recv() {
-            let id = ev.id.0.as_str();
-            if id == tray.ids.open {
-                toggle_popup(&shared, &ctx, true);
-            } else if id == tray.ids.refresh {
-                let _ = shared.cmd_tx.send(UiCommand::RefreshNow);
-            } else if id == tray.ids.settings {
-                toggle_popup(&shared, &ctx, true);
-            } else if id == tray.ids.quit {
-                want_quit.store(true, Ordering::SeqCst);
-                ctx.send_viewport_cmd(eframe::egui::ViewportCommand::Close);
-            }
+    if let Ok(ev) = menu_rx.try_recv() {
+        let id = ev.id.0.as_str();
+        if id == tray.ids.open {
+            toggle_popup(shared, ctx, true);
+        } else if id == tray.ids.refresh {
+            let _ = shared.cmd_tx.send(UiCommand::RefreshNow);
+        } else if id == tray.ids.settings {
+            toggle_popup(shared, ctx, true);
+        } else if id == tray.ids.quit {
+            want_quit.store(true, Ordering::SeqCst);
+            ctx.send_viewport_cmd(eframe::egui::ViewportCommand::Close);
         }
+    }
 
-        if let Ok(ev) = tray_rx.try_recv() {
-            if let TrayIconEvent::Click {
-                button: tray_icon::MouseButton::Left,
-                button_state: tray_icon::MouseButtonState::Up,
-                ..
-            } = ev
-            {
-                let was = shared.visible.load(Ordering::SeqCst);
-                toggle_popup(&shared, &ctx, !was);
-            }
-        }
-
-        if let Ok(ev) = hotkey_rx.try_recv() {
-            if let Some(hk) = hotkey.as_ref() {
-                if hk.matches(ev.id, ev.state) {
-                    let was = shared.visible.load(Ordering::SeqCst);
-                    toggle_popup(&shared, &ctx, !was);
-                }
-            }
-        }
-
-        let (percent, label, want_hotkey) = {
-            let st = shared.state.lock();
-            let percent = st.usage.as_ref().map(|u| u.session_percent());
-            let label = match (st.usage.as_ref(), st.last_error.as_ref()) {
-                (Some(u), _) => format!("Claude · {}% (5h)", u.session_percent()),
-                (None, Some(err)) => format!("Claude · {}", err),
-                (None, None) => "Claude · waiting…".into(),
-            };
-            (percent, label, st.settings.hotkey_enabled)
-        };
-
-        let needs_repaint = last_tray_render
-            .as_ref()
-            .map(|(p, l)| *p != percent || l != &label)
-            .unwrap_or(true);
-        if needs_repaint {
-            tray.update(percent, &label);
-            last_tray_render = Some((percent, label));
-        }
-
-        if want_hotkey != last_settings_hotkey {
-            if let Some(hk) = hotkey.as_mut() {
-                let _ = hk.set_enabled(want_hotkey);
-            }
-            last_settings_hotkey = want_hotkey;
-        }
-
-        #[cfg(target_os = "linux")]
+    if let Ok(ev) = tray_rx.try_recv() {
+        if let TrayIconEvent::Click {
+            button: tray_icon::MouseButton::Left,
+            button_state: tray_icon::MouseButtonState::Up,
+            ..
+        } = ev
         {
-            while gtk::events_pending() {
-                gtk::main_iteration_do(false);
+            let was = shared.visible.load(Ordering::SeqCst);
+            toggle_popup(shared, ctx, !was);
+        }
+    }
+
+    if let Ok(ev) = hotkey_rx.try_recv() {
+        if let Some(hk) = hotkey.as_ref() {
+            if hk.matches(ev.id, ev.state) {
+                let was = shared.visible.load(Ordering::SeqCst);
+                toggle_popup(shared, ctx, !was);
             }
         }
+    }
+
+    let (percent, label, want_hotkey, show_percent, icon_style, accent) = {
+        let st = shared.state.lock();
+        let percent = st.usage.as_ref().map(|u| u.session_percent());
+        let label = match (st.usage.as_ref(), st.last_error.as_ref()) {
+            (Some(u), _) => format!("Claude · {}% (5h)", u.session_percent()),
+            (None, Some(err)) => format!("Claude · {}", err),
+            (None, None) => "Claude · waiting…".into(),
+        };
+        (
+            percent,
+            label,
+            st.settings.hotkey_enabled,
+            st.settings.show_percent_in_tray,
+            st.settings.tray_icon_style,
+            st.settings.accent,
+        )
+    };
+
+    let needs_repaint = pump
+        .last_tray_render
+        .as_ref()
+        .map(|(p, l, sp, is, ac)| {
+            *p != percent
+                || l != &label
+                || *sp != show_percent
+                || *is != icon_style
+                || *ac != accent
+        })
+        .unwrap_or(true);
+    if needs_repaint {
+        tray.update(percent, &label, show_percent, icon_style, accent);
+        pump.last_tray_render = Some((percent, label, show_percent, icon_style, accent));
+    }
+
+    if want_hotkey != pump.last_settings_hotkey {
+        if let Some(hk) = hotkey.as_mut() {
+            let _ = hk.set_enabled(want_hotkey);
+        }
+        pump.last_settings_hotkey = want_hotkey;
     }
 }
 
 fn toggle_popup(shared: &TrayShared, ctx: &eframe::egui::Context, show: bool) {
     shared.visible.store(show, Ordering::SeqCst);
     ctx.request_repaint();
+}
+
+/// Short human-readable reset time for the notification template's `{reset}`.
+fn format_reset_label(at: chrono::DateTime<chrono::Utc>) -> String {
+    let diff = at.signed_duration_since(chrono::Utc::now());
+    let secs = diff.num_seconds();
+    if secs <= 60 {
+        return "soon".into();
+    }
+    let mins = secs / 60;
+    let hours = mins / 60;
+    let days = hours / 24;
+    if days >= 1 {
+        format!("in {}d", days)
+    } else if hours >= 1 {
+        format!("in {}h {}m", hours, mins % 60)
+    } else {
+        format!("in {}m", mins)
+    }
 }

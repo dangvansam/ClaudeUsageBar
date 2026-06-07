@@ -7,17 +7,37 @@ const APP_ID: &str = "com.claude.usagebar";
 pub struct Notifier;
 
 impl Notifier {
-    pub fn maybe_notify_threshold(percent: u8, last_notified: u8) -> Option<u8> {
+    pub fn maybe_notify_threshold(
+        percent: u8,
+        last_notified: u8,
+        template: &str,
+        reset_label: Option<&str>,
+    ) -> Option<u8> {
         let next = THRESHOLDS
             .iter()
             .copied()
             .filter(|&t| percent >= t && last_notified < t)
             .max()?;
-        Self::send(
-            "Claude Usage Alert",
-            &format!("You've hit {}% of your 5-hour session limit.", percent),
-        );
+        let reset = reset_label.unwrap_or("soon");
+        let body = Self::render_template(template, percent, "session", reset);
+        Self::send("Claude Usage Alert", &body);
         Some(next)
+    }
+
+    /// Substitute `{pct}` `{limit}` `{reset}` in the user's notification
+    /// template (matches `project/app.js::buildMessage`). `pct` is rendered as
+    /// e.g. `"82%"` to match the prototype.
+    pub fn render_template(template: &str, pct: u8, limit: &str, reset: &str) -> String {
+        template
+            .replace("{pct}", &format!("{}%", pct))
+            .replace("{limit}", limit)
+            .replace("{reset}", reset)
+    }
+
+    /// Fire a one-off toast with already-rendered body — used by the Settings
+    /// → Notifications "Preview notification" button.
+    pub fn send_preview(body: &str) {
+        Self::send("Claude Usage Bar", body);
     }
 
     pub fn reset_threshold_if_dropped(percent: u8, last_notified: u8) -> u8 {

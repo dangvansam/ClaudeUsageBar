@@ -10,6 +10,49 @@ const APP: &str = "ClaudeUsageBar";
 const KEYRING_SERVICE: &str = "com.claude.usagebar";
 const KEYRING_USER: &str = "session-cookie";
 
+#[derive(Copy, Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "lowercase")]
+pub enum ThemeMode {
+    Light,
+    Dark,
+    System,
+}
+
+impl Default for ThemeMode {
+    fn default() -> Self {
+        Self::System
+    }
+}
+
+#[derive(Copy, Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "lowercase")]
+pub enum Accent {
+    Warm,
+    Cool,
+    Coral,
+    Mono,
+}
+
+impl Default for Accent {
+    fn default() -> Self {
+        Self::Warm
+    }
+}
+
+#[derive(Copy, Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "lowercase")]
+pub enum TrayIconStyle {
+    Number,
+    Ring,
+    Mark,
+}
+
+impl Default for TrayIconStyle {
+    fn default() -> Self {
+        Self::Mark
+    }
+}
+
 #[derive(Clone, Debug, Serialize, Deserialize)]
 pub struct Settings {
     #[serde(default = "default_true")]
@@ -19,7 +62,21 @@ pub struct Settings {
     #[serde(default = "default_true")]
     pub hotkey_enabled: bool,
     #[serde(default)]
+    pub show_percent_in_tray: bool,
+    #[serde(default)]
     pub launch_at_login: bool,
+    #[serde(default)]
+    pub theme: ThemeMode,
+    #[serde(default)]
+    pub accent: Accent,
+    #[serde(default)]
+    pub tray_icon_style: TrayIconStyle,
+    #[serde(default = "default_warn_threshold")]
+    pub session_warn_threshold: u8,
+    #[serde(default = "default_warn_threshold")]
+    pub weekly_warn_threshold: u8,
+    #[serde(default = "default_notif_template")]
+    pub notif_message_template: String,
     #[serde(default)]
     pub last_notified_threshold: u8,
     #[serde(default)]
@@ -32,7 +89,14 @@ impl Default for Settings {
             usage_notifications_enabled: true,
             status_notifications_enabled: true,
             hotkey_enabled: true,
+            show_percent_in_tray: false,
             launch_at_login: false,
+            theme: ThemeMode::default(),
+            accent: Accent::default(),
+            tray_icon_style: TrayIconStyle::default(),
+            session_warn_threshold: default_warn_threshold(),
+            weekly_warn_threshold: default_warn_threshold(),
+            notif_message_template: default_notif_template(),
             last_notified_threshold: 0,
             last_seen_version: None,
         }
@@ -41,6 +105,15 @@ impl Default for Settings {
 
 fn default_true() -> bool {
     true
+}
+
+fn default_warn_threshold() -> u8 {
+    80
+}
+
+fn default_notif_template() -> String {
+    // Verbatim from project/app.js DEFAULTS.message.
+    "Heads up — you've used {pct} of your {limit} limit. Resets {reset}.".to_string()
 }
 
 pub struct Storage;
