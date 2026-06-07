@@ -67,3 +67,10 @@ temp/
 # Internal docs (kept local, not on public GitHub)
 NOTIFICATIONS.md
 internal-docs/
+
+# Rust build artifacts
+target/
+**/target/
+
+# Rune tooling state
+.rune/

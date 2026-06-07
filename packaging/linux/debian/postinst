@@ -1,0 +1,27 @@
+#!/bin/sh
+set -e
+
+if command -v update-desktop-database >/dev/null 2>&1; then
+    update-desktop-database -q || true
+fi
+
+if command -v gtk-update-icon-cache >/dev/null 2>&1; then
+    gtk-update-icon-cache -q -t /usr/share/icons/hicolor 2>/dev/null || true
+fi
+
+DESKTOP="${XDG_CURRENT_DESKTOP:-}"
+case "$(echo "$DESKTOP" | tr 'A-Z' 'a-z')" in
+    *gnome*|*unity*)
+        cat <<EOF
+ClaudeUsageBar installed.
+
+GNOME hides system tray icons by default. To see the tray icon, install
+the AppIndicator extension:
+    https://extensions.gnome.org/extension/615/appindicator-support/
+
+Then log out and log back in.
+EOF
+        ;;
+esac
+
+exit 0

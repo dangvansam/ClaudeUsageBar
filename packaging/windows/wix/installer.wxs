@@ -1,0 +1,110 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<Wix xmlns="http://wixtoolset.org/schemas/v4/wxs"
+     xmlns:ui="http://wixtoolset.org/schemas/v4/wxs/ui">
+
+  <Package
+      Name="ClaudeUsageBar"
+      Manufacturer="ClaudeUsageBar"
+      UpgradeCode="6f8a2d10-2b2e-4d51-9b6e-3c0a8e5b5d10"
+      Version="1.2.1.0"
+      Scope="perUser"
+      InstallerVersion="500"
+      Compressed="yes">
+
+    <SummaryInformation Description="Lightweight tray app for Claude.ai usage limits." />
+
+    <MajorUpgrade
+        DowngradeErrorMessage="A newer version of ClaudeUsageBar is already installed."
+        Schedule="afterInstallInitialize" />
+
+    <Media Id="1" Cabinet="cab1.cab" EmbedCab="yes" />
+
+    <Icon Id="app.ico" SourceFile="..\..\..\app-rs\app.ico" />
+    <Property Id="ARPPRODUCTICON" Value="app.ico" />
+    <Property Id="ARPURLINFOABOUT" Value="https://claudeusagebar.com" />
+    <Property Id="ARPHELPLINK" Value="https://github.com/Artzainnn/ClaudeUsageBar" />
+
+    <StandardDirectory Id="LocalAppDataFolder">
+      <Directory Id="ProgramsFolder" Name="Programs">
+        <Directory Id="INSTALLFOLDER" Name="ClaudeUsageBar" />
+      </Directory>
+    </StandardDirectory>
+
+    <StandardDirectory Id="ProgramMenuFolder">
+      <Directory Id="StartMenuFolder" Name="ClaudeUsageBar" />
+    </StandardDirectory>
+
+    <ComponentGroup Id="AppFiles" Directory="INSTALLFOLDER">
+      <Component Id="MainExe" Guid="*">
+        <File Id="ClaudeUsageBarExe"
+              Source="..\..\..\app-rs\target\release\claude-usage-bar.exe"
+              KeyPath="yes" />
+        <RegistryValue
+            Root="HKCU"
+            Key="Software\ClaudeUsageBar"
+            Name="InstalledVersion"
+            Type="string"
+            Value="1.2.1" />
+      </Component>
+
+      <Component Id="AutoStart" Guid="*">
+        <Condition>AUTOSTART = 1</Condition>
+        <RegistryValue
+            Root="HKCU"
+            Key="Software\Microsoft\Windows\CurrentVersion\Run"
+            Name="ClaudeUsageBar"
+            Type="string"
+            Value="[INSTALLFOLDER]claude-usage-bar.exe"
+            KeyPath="yes" />
+      </Component>
+    </ComponentGroup>
+
+    <ComponentGroup Id="StartMenuShortcuts" Directory="StartMenuFolder">
+      <Component Id="AppShortcut" Guid="*">
+        <Shortcut Id="StartMenuShortcut"
+                  Name="Claude Usage Bar"
+                  Description="Track Claude.ai usage from the system tray"
+                  Target="[INSTALLFOLDER]claude-usage-bar.exe"
+                  WorkingDirectory="INSTALLFOLDER"
+                  Icon="app.ico">
+          <ShortcutProperty
+              Key="System.AppUserModel.ID"
+              Value="com.claude.usagebar" />
+        </Shortcut>
+        <RemoveFolder Id="RemoveStartMenuFolder" On="uninstall" />
+        <RegistryValue
+            Root="HKCU"
+            Key="Software\ClaudeUsageBar"
+            Name="Shortcut"
+            Type="integer"
+            Value="1"
+            KeyPath="yes" />
+      </Component>
+    </ComponentGroup>
+
+    <Feature Id="MainFeature" Title="ClaudeUsageBar" Level="1" Display="expand">
+      <ComponentGroupRef Id="AppFiles" />
+      <ComponentGroupRef Id="StartMenuShortcuts" />
+    </Feature>
+
+    <Property Id="AUTOSTART" Value="1" />
+    <Property Id="WIXUI_INSTALLDIR" Value="INSTALLFOLDER" />
+    <Property Id="ARPNOMODIFY" Value="1" />
+    <Property Id="ARPNOREPAIR" Value="1" />
+
+    <ui:WixUI Id="WixUI_Minimal" />
+    <WixVariable Id="WixUILicenseRtf" Value="License.rtf" />
+
+    <CustomAction
+        Id="LaunchApplication"
+        FileRef="ClaudeUsageBarExe"
+        ExeCommand=""
+        Execute="immediate"
+        Return="asyncNoWait" />
+
+    <InstallExecuteSequence>
+      <Custom Action="LaunchApplication" After="InstallFinalize" Condition="NOT Installed" />
+    </InstallExecuteSequence>
+
+  </Package>
+</Wix>

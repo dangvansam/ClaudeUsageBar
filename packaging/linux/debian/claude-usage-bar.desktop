@@ -1,0 +1,13 @@
+[Desktop Entry]
+Type=Application
+Name=Claude Usage Bar
+GenericName=Claude usage tracker
+Comment=Track Claude.ai 5h/7d usage limits from your system tray
+Exec=claude-usage-bar
+Icon=claude-usage-bar
+Terminal=false
+Categories=Utility;Network;Monitor;
+Keywords=claude;anthropic;ai;usage;tray;status;
+StartupNotify=false
+StartupWMClass=ClaudeUsageBar
+X-GNOME-UsesNotifications=true

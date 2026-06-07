@@ -1,0 +1,125 @@
+use anyhow::{Context, Result};
+use directories::ProjectDirs;
+use serde::{Deserialize, Serialize};
+use std::fs;
+use std::path::PathBuf;
+
+const QUALIFIER: &str = "com";
+const ORG: &str = "ClaudeUsageBar";
+const APP: &str = "ClaudeUsageBar";
+const KEYRING_SERVICE: &str = "com.claude.usagebar";
+const KEYRING_USER: &str = "session-cookie";
+
+#[derive(Clone, Debug, Serialize, Deserialize)]
+pub struct Settings {
+    #[serde(default = "default_true")]
+    pub usage_notifications_enabled: bool,
+    #[serde(default = "default_true")]
+    pub status_notifications_enabled: bool,
+    #[serde(default = "default_true")]
+    pub hotkey_enabled: bool,
+    #[serde(default)]
+    pub launch_at_login: bool,
+    #[serde(default)]
+    pub last_notified_threshold: u8,
+    #[serde(default)]
+    pub last_seen_version: Option<String>,
+}
+
+impl Default for Settings {
+    fn default() -> Self {
+        Self {
+            usage_notifications_enabled: true,
+            status_notifications_enabled: true,
+            hotkey_enabled: true,
+            launch_at_login: false,
+            last_notified_threshold: 0,
+            last_seen_version: None,
+        }
+    }
+}
+
+fn default_true() -> bool {
+    true
+}
+
+pub struct Storage;
+
+impl Storage {
+    pub fn config_dir() -> Result<PathBuf> {
+        let dirs = ProjectDirs::from(QUALIFIER, ORG, APP)
+            .context("could not resolve project directories")?;
+        let path = dirs.config_dir().to_path_buf();
+        fs::create_dir_all(&path).ok();
+        Ok(path)
+    }
+
+    pub fn settings_path() -> Result<PathBuf> {
+        Ok(Self::config_dir()?.join("settings.json"))
+    }
+
+    pub fn load_settings() -> Settings {
+        let path = match Self::settings_path() {
+            Ok(p) => p,
+            Err(_) => return Settings::default(),
+        };
+        match fs::read_to_string(&path) {
+            Ok(raw) => serde_json::from_str(&raw).unwrap_or_default(),
+            Err(_) => Settings::default(),
+        }
+    }
+
+    pub fn save_settings(settings: &Settings) -> Result<()> {
+        let path = Self::settings_path()?;
+        let raw = serde_json::to_string_pretty(settings)?;
+        fs::write(&path, raw).with_context(|| format!("writing {}", path.display()))?;
+        Ok(())
+    }
+
+    pub fn load_cookie() -> Option<String> {
+        match keyring::Entry::new(KEYRING_SERVICE, KEYRING_USER) {
+            Ok(entry) => entry.get_password().ok().filter(|s| !s.is_empty()),
+            Err(_) => Self::load_cookie_fallback(),
+        }
+    }
+
+    pub fn save_cookie(cookie: &str) -> Result<()> {
+        if let Ok(entry) = keyring::Entry::new(KEYRING_SERVICE, KEYRING_USER) {
+            if entry.set_password(cookie).is_ok() {
+                let _ = fs::remove_file(Self::cookie_fallback_path().ok().unwrap_or_default());
+                return Ok(());
+            }
+        }
+        Self::save_cookie_fallback(cookie)
+    }
+
+    pub fn clear_cookie() -> Result<()> {
+        if let Ok(entry) = keyring::Entry::new(KEYRING_SERVICE, KEYRING_USER) {
+            let _ = entry.delete_credential();
+        }
+        if let Ok(path) = Self::cookie_fallback_path() {
+            let _ = fs::remove_file(path);
+        }
+        Ok(())
+    }
+
+    fn cookie_fallback_path() -> Result<PathBuf> {
+        Ok(Self::config_dir()?.join("cookie.txt"))
+    }
+
+    fn load_cookie_fallback() -> Option<String> {
+        let path = Self::cookie_fallback_path().ok()?;
+        fs::read_to_string(path).ok().map(|s| s.trim().to_string()).filter(|s| !s.is_empty())
+    }
+
+    fn save_cookie_fallback(cookie: &str) -> Result<()> {
+        let path = Self::cookie_fallback_path()?;
+        fs::write(&path, cookie)?;
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            let _ = fs::set_permissions(&path, fs::Permissions::from_mode(0o600));
+        }
+        Ok(())
+    }
+}

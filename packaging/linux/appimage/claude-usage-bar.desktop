@@ -1,0 +1,10 @@
+[Desktop Entry]
+Type=Application
+Name=Claude Usage Bar
+Comment=Track Claude.ai 5h/7d usage limits from your system tray
+Exec=claude-usage-bar
+Icon=claude-usage-bar
+Terminal=false
+Categories=Utility;Network;
+StartupNotify=false
+StartupWMClass=ClaudeUsageBar
