@@ -575,8 +575,9 @@ dependencies = [
 
 [[package]]
 name = "claude-usage-bar"
-version = "1.2.1"
+version = "1.2.3"
 dependencies = [
+ "ab_glyph",
  "anyhow",
  "auto-launch",
  "chrono",
@@ -585,6 +586,7 @@ dependencies = [
  "egui",
  "embed-resource",
  "env_logger",
+ "epaint_default_fonts",
  "global-hotkey",
  "gtk",
  "image",

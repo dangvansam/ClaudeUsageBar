@@ -1,6 +1,6 @@
 [package]
 name = "claude-usage-bar"
-version = "1.2.1"
+version = "1.2.3"
 edition = "2021"
 rust-version = "1.78"
 description = "Lightweight tray app showing Claude.ai 5h/7d usage limits"
@@ -20,6 +20,8 @@ eframe = { version = "0.32", default-features = false, features = ["glow", "wayl
 egui = "0.32"
 image = { version = "0.25", default-features = false, features = ["png"] }
 tiny-skia = "0.11"
+ab_glyph = "0.2"
+epaint_default_fonts = "0.32"
 ureq = { version = "2.10", features = ["tls", "json"] }
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"

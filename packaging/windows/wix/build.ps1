@@ -36,8 +36,9 @@ if (-not (Get-Command wix -ErrorAction SilentlyContinue)) {
 }
 
 Push-Location $scriptRoot
-$msiName = "ClaudeUsageBar-$([System.IO.Path]::GetFileNameWithoutExtension('1.2.1'))-x64.msi"
+$version = "1.2.3"
+$msiName = "ClaudeUsageBar-$version-x64.msi"
 wix extension add WixToolset.UI.wixext
-wix build -ext WixToolset.UI.wixext -out $msiName installer.wxs
+wix build -ext WixToolset.UI.wixext -arch x64 -out $msiName installer.wxs
 Write-Host "Built: $(Join-Path $scriptRoot $msiName)"
 Pop-Location
