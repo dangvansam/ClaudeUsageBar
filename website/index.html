@@ -32,12 +32,12 @@
   <meta name="twitter:image:alt" content="ClaudeUsageBar - Track your Claude AI usage from the macOS menu bar">
   <link rel="preconnect" href="https://fonts.googleapis.com">
   <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
-  <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&family=JetBrains+Mono:wght@500&display=swap" rel="stylesheet">
+  <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;450;500;550;600;650;700&family=JetBrains+Mono:wght@500&display=swap" rel="stylesheet">
   <style>
     :root {
-      --claude-orange: #da7756;
-      --claude-orange-dark: #b85a42;
-      --claude-orange-light: #e8956f;
+      --claude-orange: #c8603f;
+      --claude-orange-dark: #b04f33;
+      --claude-orange-light: #db7c57;
       --bg-dark: #0d0d0f;
       --bg-card: #18181b;
       --bg-card-hover: #1f1f23;
@@ -83,7 +83,7 @@
       transform: translateX(-50%);
       width: 800px;
       height: 600px;
-      background: radial-gradient(ellipse, rgba(218, 119, 86, 0.12) 0%, transparent 70%);
+      background: radial-gradient(ellipse, rgba(200, 96, 63, 0.12) 0%, transparent 70%);
       filter: blur(80px);
     }
 
@@ -94,7 +94,7 @@
       left: 0;
       right: 0;
       height: 50%;
-      background: radial-gradient(ellipse at bottom, rgba(218, 119, 86, 0.05) 0%, transparent 60%);
+      background: radial-gradient(ellipse at bottom, rgba(200, 96, 63, 0.05) 0%, transparent 60%);
     }
 
     /* Navigation */
@@ -196,8 +196,8 @@
       align-items: center;
       gap: 8px;
       padding: 8px 16px;
-      background: rgba(218, 119, 86, 0.1);
-      border: 1px solid rgba(218, 119, 86, 0.2);
+      background: rgba(200, 96, 63, 0.1);
+      border: 1px solid rgba(200, 96, 63, 0.2);
       border-radius: 100px;
       font-size: 13px;
       font-weight: 500;
@@ -216,7 +216,7 @@
       height: 140px;
       margin-bottom: 40px;
       animation: fadeInUp 0.6s ease-out 0.1s both;
-      filter: drop-shadow(0 20px 40px rgba(218, 119, 86, 0.3));
+      filter: drop-shadow(0 20px 40px rgba(200, 96, 63, 0.3));
     }
 
     .hero-icon-inner {
@@ -299,13 +299,13 @@
       font-weight: 600;
       border-radius: 14px;
       transition: all 0.3s;
-      box-shadow: 0 4px 24px rgba(218, 119, 86, 0.4);
+      box-shadow: 0 4px 24px rgba(200, 96, 63, 0.4);
     }
 
     .download-btn:hover {
       background: var(--claude-orange-light);
       transform: translateY(-2px);
-      box-shadow: 0 8px 32px rgba(218, 119, 86, 0.5);
+      box-shadow: 0 8px 32px rgba(200, 96, 63, 0.5);
     }
 
     .download-btn svg {
@@ -617,14 +617,14 @@
 
     .feature-card:hover {
       background: var(--bg-card-hover);
-      border-color: rgba(218, 119, 86, 0.3);
+      border-color: rgba(200, 96, 63, 0.3);
       transform: translateY(-4px);
     }
 
     .feature-icon {
       width: 48px;
       height: 48px;
-      background: rgba(218, 119, 86, 0.1);
+      background: rgba(200, 96, 63, 0.1);
       border-radius: 12px;
       display: flex;
       align-items: center;
@@ -738,7 +738,7 @@
 
     .creator-link:hover {
       background: var(--bg-card-hover);
-      border-color: rgba(218, 119, 86, 0.3);
+      border-color: rgba(200, 96, 63, 0.3);
       transform: translateY(-2px);
     }
 
@@ -757,15 +757,15 @@
       font-size: 15px;
       font-weight: 500;
       padding: 10px 20px;
-      background: rgba(218, 119, 86, 0.1);
-      border: 1px solid rgba(218, 119, 86, 0.2);
+      background: rgba(200, 96, 63, 0.1);
+      border: 1px solid rgba(200, 96, 63, 0.2);
       border-radius: 10px;
       transition: all 0.3s;
     }
 
     .coffee-link:hover {
-      background: rgba(218, 119, 86, 0.15);
-      border-color: rgba(218, 119, 86, 0.3);
+      background: rgba(200, 96, 63, 0.15);
+      border-color: rgba(200, 96, 63, 0.3);
       transform: translateY(-2px);
     }
 
@@ -888,7 +888,7 @@
     }
 
     .faq-item:hover {
-      border-color: rgba(218, 119, 86, 0.2);
+      border-color: rgba(200, 96, 63, 0.2);
     }
 
     .faq-question {
@@ -1035,7 +1035,9 @@
     src="https://datafa.st/js/script.js">
   </script>
   <link rel="stylesheet" href="/nav-status.css">
+  <link rel="stylesheet" href="/demo.css">
   <script src="/nav-status.js" defer></script>
+  <script src="/demo.js" defer></script>
 </head>
 <body style="background-color: #0d0d0f;">
   <div class="ambient"></div>
@@ -1150,68 +1152,76 @@
   </section>
 
   <section class="screenshot-section">
-    <div class="screenshot-container">
-      <div class="screenshot">
-        <div class="screenshot-header">
-          <span class="screenshot-dot red"></span>
-          <span class="screenshot-dot yellow"></span>
-          <span class="screenshot-dot green"></span>
+    <div class="demo" id="usageDemo" data-theme="dark" data-platform="mac" data-accent="warm">
+      <div class="demo-controls">
+        <div class="tb-group">
+          <span class="tb-label">OS</span>
+          <div class="seg" id="platformSeg" role="group" aria-label="Platform">
+            <button data-platform="mac" aria-pressed="true">macOS</button>
+            <button data-platform="win" aria-pressed="false">Windows</button>
+            <button data-platform="ubuntu" aria-pressed="false">Ubuntu</button>
+          </div>
         </div>
-        <div class="screenshot-content">
-          <div class="menu-bar-demo">
-            <div class="menu-bar">
-              <span class="menu-item"></span>
-              <span class="menu-item">File</span>
-              <span class="menu-item">Edit</span>
-              <span class="menu-item">View</span>
-              <span class="menu-item">...</span>
-              <span class="menu-icon">
-                <svg viewBox="0 0 16 16" fill="none" xmlns="http://www.w3.org/2000/svg">
-                  <path d="M8 1L9 6L13 3L10 7L15 8L10 9L13 13L9 10L8 15L7 10L3 13L6 9L1 8L6 7L3 3L7 6L8 1Z" fill="#da7756"/>
-                </svg>
-              </span>
-              <span class="menu-item" style="color: var(--claude-orange);">67%</span>
-            </div>
-            <div class="usage-popup" id="usagePopup">
-              <div class="usage-popup-title">Claude Usage</div>
-
-              <div class="usage-section">
-                <div class="usage-section-header">
-                  <span class="usage-section-label">Session (5 hour)</span>
-                  <span class="usage-section-reset" id="sessionReset">Resets at 3:45 PM</span>
-                </div>
-                <div class="usage-progress">
-                  <div class="usage-progress-bar green" id="sessionBar" style="width: 67%;"></div>
-                </div>
-                <span class="usage-section-percent" id="sessionPercent">67% used</span>
-              </div>
-
-              <div class="usage-section">
-                <div class="usage-section-header">
-                  <span class="usage-section-label">Weekly (7 day)</span>
-                  <span class="usage-section-reset" id="weeklyReset">Resets on 31 Jan 2026</span>
-                </div>
-                <div class="usage-progress">
-                  <div class="usage-progress-bar" id="weeklyBar" style="width: 82%;"></div>
-                </div>
-                <span class="usage-section-percent" id="weeklyPercent">82% used</span>
-              </div>
-
-              <div class="usage-status-row" id="statusRow">
-                <span class="usage-status-dot green" id="statusDot"></span>
-                <span id="statusLabel">All Claude services operational</span>
-              </div>
-
-              <div class="usage-popup-footer">
-                <span id="lastUpdated">Last updated: 11:22 AM</span>
-                <span class="usage-popup-refresh" id="refreshBtn" onclick="refreshUsage()">Refresh</span>
-              </div>
-            </div>
+        <div class="tb-group">
+          <span class="tb-label">Theme</span>
+          <div class="seg" id="themeSeg" role="group" aria-label="Theme">
+            <button data-theme="light" aria-pressed="false">Light</button>
+            <button data-theme="dark" aria-pressed="true">Dark</button>
+            <button data-theme="system" aria-pressed="false">System</button>
           </div>
         </div>
       </div>
-      <div style="text-align: center; margin-top: 16px;">
-        <a href="javascript:void(0)" onclick="refreshUsage()" style="color: var(--text-muted); font-size: 14px; text-decoration: none; cursor: pointer; transition: color 0.2s;" onmouseover="this.style.color='var(--claude-orange)'" onmouseout="this.style.color='var(--text-muted)'">Click to see it in action</a>
+
+      <div class="desktop" id="desktop">
+        <div class="wallpaper"></div>
+
+        <div class="menubar">
+          <span class="mb-apple"></span>
+          <span class="mb-app">Finder</span>
+          <span class="mb-menus"><span>File</span><span>Edit</span><span>View</span><span>Window</span></span>
+          <span class="mb-right">
+            <button class="tray-btn" data-tray="1"></button>
+            <span class="mb-ico" data-ico="battery"></span>
+            <span class="mb-ico" data-ico="wifi"></span>
+            <span class="mb-ico" data-ico="search"></span>
+            <span class="mb-ico" data-ico="control"></span>
+            <span class="mb-clock">Sat 1:36 PM</span>
+          </span>
+        </div>
+
+        <div class="taskbar">
+          <div class="tk-center">
+            <span class="tk-app" data-ico="winlogo"></span>
+            <span class="tk-app" data-ico="search"></span>
+            <span class="tk-app" data-ico="files"></span>
+          </div>
+          <div class="tk-tray">
+            <button class="tray-btn" data-tray="1"></button>
+            <span class="mb-ico" data-ico="wifi"></span>
+            <span class="mb-ico" data-ico="volume"></span>
+            <span class="mb-ico" data-ico="battery"></span>
+            <span class="tk-clock">1:36 PM<br />6/7/2026</span>
+          </div>
+        </div>
+
+        <div class="gnomebar">
+          <span class="gn-activities">Activities</span>
+          <span class="gn-clock">Sat 13:36</span>
+          <span class="gn-right">
+            <button class="tray-btn" data-tray="1"></button>
+            <span class="mb-ico" data-ico="wifi"></span>
+            <span class="mb-ico" data-ico="volume"></span>
+            <span class="mb-ico" data-ico="power"></span>
+          </span>
+        </div>
+
+        <div class="click-hint">Click the usage icon ↑</div>
+
+        <div class="popover" id="popover"></div>
+
+        <div class="live-toast" id="liveToast"></div>
+
+        <button class="notif-trigger" id="notifTrigger" data-ico="bell">Trigger a notification</button>
       </div>
     </div>
   </section>
@@ -1289,6 +1299,46 @@
         <h3>Lightweight</h3>
         <p>Under 5MB. Minimal CPU and memory footprint. Built native for Apple Silicon and Intel Macs.</p>
       </div>
+    </div>
+  </section>
+
+  <section class="features" id="settings">
+    <div class="features-header">
+      <h2>Settings, your way</h2>
+      <p>A native settings window — flip switches, pick pages, change appearance</p>
+    </div>
+    <div class="demo" data-theme="dark" data-platform="mac" data-accent="warm">
+      <div class="win">
+        <div class="titlebar">
+          <div class="tl-dots"><i class="r"></i><i class="y"></i><i class="g"></i></div>
+          <span class="tl-title">Claude Usage Bar — Settings</span>
+          <div class="tl-winctl"><span data-ico="min"></span><span data-ico="max"></span><span data-ico="close"></span></div>
+        </div>
+        <div class="win-body">
+          <div class="sidebar" id="settingsNav"></div>
+          <div class="panel" id="settingsPanel"></div>
+        </div>
+      </div>
+    </div>
+  </section>
+
+  <section class="features" id="tray-icons">
+    <div class="features-header">
+      <h2>Icon styles &amp; states</h2>
+      <p>The tray icon adapts to your usage — number, ring, or mark. Color tracks the busiest limit</p>
+    </div>
+    <div class="demo" data-theme="dark" data-platform="mac" data-accent="warm">
+      <div class="gal-grid" id="galGrid"></div>
+    </div>
+  </section>
+
+  <section class="features" id="notifications">
+    <div class="features-header">
+      <h2>Notifications that fit in</h2>
+      <p>Native toasts on each platform, using your custom message</p>
+    </div>
+    <div class="demo" data-theme="dark" data-platform="mac" data-accent="warm">
+      <div class="notif-stack" id="notifStack"></div>
     </div>
   </section>
 
@@ -1400,78 +1450,6 @@
   </footer>
 
   <script>
-    // Update last updated time to user's current time
-    function updateLastUpdatedTime() {
-      const now = new Date();
-      const timeStr = now.toLocaleTimeString('en-US', { hour: 'numeric', minute: '2-digit', hour12: true });
-      document.getElementById('lastUpdated').textContent = 'Last updated: ' + timeStr;
-    }
-
-    // Generate random usage data
-    function refreshUsage() {
-      const sessionPercent = Math.floor(Math.random() * 85) + 5; // 5-90%
-      const weeklyPercent = Math.floor(Math.random() * 85) + 10; // 10-95%
-
-      // Update session
-      const sessionBar = document.getElementById('sessionBar');
-      sessionBar.style.width = sessionPercent + '%';
-      sessionBar.className = 'usage-progress-bar ' + (sessionPercent < 70 ? 'green' : sessionPercent < 90 ? 'orange' : 'red');
-      document.getElementById('sessionPercent').textContent = sessionPercent + '% used';
-
-      // Update weekly
-      const weeklyBar = document.getElementById('weeklyBar');
-      weeklyBar.style.width = weeklyPercent + '%';
-      weeklyBar.className = 'usage-progress-bar ' + (weeklyPercent < 70 ? 'green' : weeklyPercent < 90 ? 'orange' : 'red');
-      document.getElementById('weeklyPercent').textContent = weeklyPercent + '% used';
-
-      // Update menu bar percentage display
-      const menuPercent = document.querySelector('.menu-item[style]');
-      if (menuPercent) menuPercent.textContent = sessionPercent + '%';
-
-      // Randomize Claude service status: 50% green, 35% orange, 15% red
-      const statusDot = document.getElementById('statusDot');
-      const statusLabel = document.getElementById('statusLabel');
-      if (statusDot && statusLabel) {
-        const roll = Math.random();
-        let color, text;
-        if (roll < 0.50) {
-          color = 'green';
-          text = 'All Claude services operational';
-        } else if (roll < 0.85) {
-          color = 'orange';
-          text = 'Claude API: degraded performance';
-        } else {
-          color = 'red';
-          text = 'Multiple service outages';
-        }
-        statusDot.className = 'usage-status-dot ' + color;
-        statusLabel.textContent = text;
-      }
-
-      // Update last updated time
-      updateLastUpdatedTime();
-    }
-
-    // Toggle usage popup with Cmd+U
-    function toggleUsagePopup() {
-      const popup = document.getElementById('usagePopup');
-      if (popup.style.display === 'none') {
-        popup.style.display = 'block';
-        updateLastUpdatedTime();
-      } else {
-        popup.style.display = 'none';
-      }
-    }
-
-    // Listen for Cmd+U keyboard shortcut
-    document.addEventListener('keydown', function(e) {
-      if ((e.metaKey || e.ctrlKey) && e.key === 'u') {
-        e.preventDefault();
-        toggleUsagePopup();
-      }
-    });
-
-    // Fetch GitHub star count
     function fetchStarCount() {
       fetch('https://api.github.com/repos/Artzainnn/ClaudeUsageBar')
         .then(r => r.json())
@@ -1483,15 +1461,7 @@
         .catch(() => {});
     }
 
-    // Initialize on page load
-    document.addEventListener('DOMContentLoaded', function() {
-      updateLastUpdatedTime();
-      fetchStarCount();
-
-      // Set initial weekly bar color
-      const weeklyBar = document.getElementById('weeklyBar');
-      weeklyBar.className = 'usage-progress-bar orange';
-    });
+    document.addEventListener('DOMContentLoaded', fetchStarCount);
   </script>
 </body>
 </html>
