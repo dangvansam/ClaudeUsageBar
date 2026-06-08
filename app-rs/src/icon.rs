@@ -18,30 +18,34 @@ static NUM_FONT: Lazy<ab_glyph::FontRef<'static>> = Lazy::new(|| {
 
 #[derive(Copy, Clone, Debug, PartialEq, Eq)]
 pub enum HealthTier {
-    Healthy,
-    Warning,
+    Low,
+    Mid,
+    High,
     Critical,
     Unknown,
 }
 
 impl HealthTier {
-    /// Match the popover tier thresholds verbatim (project/app.js levelKey):
-    /// `>= 87 ⇒ Critical`, `>= 70 ⇒ Warning`, else `Healthy`.
+    /// Match the popover meter's 4-tier mapping verbatim (project/app.js levelKey
+    /// + Swift `Palette.tierColor`):
+    /// `>= 87 ⇒ Critical`, `>= 70 ⇒ High`, `>= 45 ⇒ Mid`, else `Low`.
     pub fn from_percent(p: Option<u8>) -> Self {
         match p {
             None => Self::Unknown,
             Some(v) if v >= 87 => Self::Critical,
-            Some(v) if v >= 70 => Self::Warning,
-            Some(_) => Self::Healthy,
+            Some(v) if v >= 70 => Self::High,
+            Some(v) if v >= 45 => Self::Mid,
+            Some(_) => Self::Low,
         }
     }
 
     fn color(self, accent: Accent) -> Color {
-        let (low, mid, high, _crit) = accent_ramp(accent);
+        let (low, mid, high, crit) = accent_ramp(accent);
         match self {
-            Self::Healthy => low,
-            Self::Warning => mid,
-            Self::Critical => high,
+            Self::Low => low,
+            Self::Mid => mid,
+            Self::High => high,
+            Self::Critical => crit,
             Self::Unknown => Color::from_rgba8(0x95, 0xA5, 0xA6, 0xFF),
         }
     }
@@ -364,11 +368,14 @@ mod tests {
     #[test]
     fn tier_thresholds() {
         assert_eq!(HealthTier::from_percent(None), HealthTier::Unknown);
-        assert_eq!(HealthTier::from_percent(Some(0)), HealthTier::Healthy);
-        assert_eq!(HealthTier::from_percent(Some(69)), HealthTier::Healthy);
-        assert_eq!(HealthTier::from_percent(Some(70)), HealthTier::Warning);
-        assert_eq!(HealthTier::from_percent(Some(86)), HealthTier::Warning);
+        assert_eq!(HealthTier::from_percent(Some(0)), HealthTier::Low);
+        assert_eq!(HealthTier::from_percent(Some(44)), HealthTier::Low);
+        assert_eq!(HealthTier::from_percent(Some(45)), HealthTier::Mid);
+        assert_eq!(HealthTier::from_percent(Some(69)), HealthTier::Mid);
+        assert_eq!(HealthTier::from_percent(Some(70)), HealthTier::High);
+        assert_eq!(HealthTier::from_percent(Some(86)), HealthTier::High);
         assert_eq!(HealthTier::from_percent(Some(87)), HealthTier::Critical);
+        assert_eq!(HealthTier::from_percent(Some(100)), HealthTier::Critical);
     }
 
     #[test]

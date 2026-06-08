@@ -31,10 +31,15 @@ pub struct PopupApp {
     cookie_input: String,
     cookie_dirty: bool,
     show_settings: bool,
+    last_show_settings: bool,
     settings_page: SettingsPage,
     visible: Arc<AtomicBool>,
     last_visible: bool,
     fonts_installed: bool,
+    // Set when the Preview button could not deliver a notification — the parent
+    // renders a modal-style window with the body text + "Open System Settings"
+    // link so the user can re-enable banners. Mirrors Swift's NSAlert fallback.
+    notif_preview_fallback: Option<String>,
     on_frame: Option<Box<dyn FnMut(&egui::Context)>>,
 }
 
@@ -54,7 +59,9 @@ impl PopupApp {
             cookie_input: cookie,
             cookie_dirty: false,
             show_settings: false,
+            last_show_settings: false,
             settings_page: SettingsPage::General,
+            notif_preview_fallback: None,
             visible,
             last_visible: false,
             fonts_installed: false,
@@ -114,6 +121,20 @@ impl eframe::App for PopupApp {
         let pal = theme::current(&settings);
         theme::apply_style(ctx, &pal);
 
+        // Settings is a much bigger surface than the popover meters; resize the
+        // viewport on enter/leave so each view gets its own appropriate window
+        // size. Mirrors the macOS app where settings opens a separate 920x680
+        // NSWindow while the popover stays at 440x ~ measured.
+        if self.show_settings != self.last_show_settings {
+            let new_size = if self.show_settings {
+                egui::vec2(920.0, 680.0)
+            } else {
+                egui::vec2(440.0, 500.0)
+            };
+            ctx.send_viewport_cmd(ViewportCommand::InnerSize(new_size));
+            self.last_show_settings = self.show_settings;
+        }
+
         egui::CentralPanel::default()
             .frame(egui::Frame::default().fill(pal.bg_stage).inner_margin(Margin::same(0)))
             .show(ctx, |ui| {
@@ -126,6 +147,7 @@ impl eframe::App for PopupApp {
                         &mut self.show_settings,
                         &mut self.cookie_input,
                         &mut self.cookie_dirty,
+                        &mut self.notif_preview_fallback,
                         settings,
                         &self.cmd_tx,
                     );
@@ -147,11 +169,53 @@ impl eframe::App for PopupApp {
                         update.as_ref(),
                         error.as_deref(),
                         loading,
+                        settings.show_service_status,
                         &mut self.show_settings,
                         &self.cmd_tx,
                     );
                 }
             });
+
+        // Floating fallback for the Notification Preview when delivery is
+        // rejected by the OS — same "open System Settings" affordance as Swift's
+        // NSAlert fallback so the button is never silent.
+        if let Some(body) = self.notif_preview_fallback.clone() {
+            let mut dismiss = false;
+            egui::Window::new("Notification preview")
+                .collapsible(false)
+                .resizable(false)
+                .anchor(egui::Align2::CENTER_CENTER, [0.0, 0.0])
+                .show(ctx, |ui| {
+                    ui.label(
+                        egui::RichText::new("Could not deliver notification")
+                            .color(pal.text_primary)
+                            .strong(),
+                    );
+                    ui.add_space(6.0);
+                    ui.label(egui::RichText::new(&body).color(pal.text_secondary));
+                    ui.add_space(4.0);
+                    ui.label(
+                        egui::RichText::new(
+                            "Notifications for Claude Usage Bar appear to be disabled at the OS level.",
+                        )
+                        .color(pal.text_muted)
+                        .small(),
+                    );
+                    ui.add_space(10.0);
+                    ui.horizontal(|ui| {
+                        if pill_button(ui, &pal, "Open System Settings", true).clicked() {
+                            crate::notify::Notifier::open_system_notification_settings();
+                            dismiss = true;
+                        }
+                        if pill_button(ui, &pal, "Dismiss", false).clicked() {
+                            dismiss = true;
+                        }
+                    });
+                });
+            if dismiss {
+                self.notif_preview_fallback = None;
+            }
+        }
 
         let interval = if self.on_frame.is_some() { 80 } else { 500 };
         ctx.request_repaint_after(std::time::Duration::from_millis(interval));
@@ -168,6 +232,7 @@ fn main_panel(
     update: Option<&UpdateInfo>,
     error: Option<&str>,
     loading: bool,
+    show_service_status: bool,
     show_settings: &mut bool,
     tx: &std::sync::mpsc::Sender<UiCommand>,
 ) {
@@ -222,21 +287,25 @@ fn main_panel(
                     );
                 }
                 Some(usage) => {
-                    meter(ui, pal, "Session (5 hour)", usage.session.utilization, usage.session.resets_at);
+                    meter(ui, pal, "Session (5 hour)", usage.session.utilization, usage.session.resets_at, false);
                     ui.add_space(10.0);
-                    meter(ui, pal, "Weekly (7 day)", usage.weekly.utilization, usage.weekly.resets_at);
+                    meter(ui, pal, "Weekly (7 day)", usage.weekly.utilization, usage.weekly.resets_at, true);
                     if let Some(sonnet) = usage.weekly_sonnet.as_ref() {
                         ui.add_space(10.0);
-                        meter(ui, pal, "Sonnet (Pro · 7 day)", sonnet.utilization, sonnet.resets_at);
+                        meter(ui, pal, "Sonnet (Pro · 7 day)", sonnet.utilization, sonnet.resets_at, true);
                     }
                 }
             }
 
-            if let Some(st) = status {
-                ui.add_space(12.0);
-                divider(ui, pal);
-                ui.add_space(8.0);
-                status_row(ui, pal, st);
+            // Status row is opt-in via Settings → General → Show service status,
+            // matching the Swift `showServiceStatus` toggle.
+            if show_service_status {
+                if let Some(st) = status {
+                    ui.add_space(12.0);
+                    divider(ui, pal);
+                    ui.add_space(8.0);
+                    status_row(ui, pal, st);
+                }
             }
 
             ui.add_space(12.0);
@@ -290,6 +359,7 @@ fn meter(
     name: &str,
     pct: u8,
     resets_at: Option<DateTime<Utc>>,
+    include_date: bool,
 ) {
     let color = theme::tier_color(pct, pal);
 
@@ -302,7 +372,7 @@ fn meter(
         ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
             if let Some(at) = resets_at {
                 ui.label(
-                    RichText::new(format!("Resets {}", format_relative_short(at)))
+                    RichText::new(format_meter_reset(at, include_date))
                         .color(pal.text_muted)
                         .small(),
                 );
@@ -475,6 +545,39 @@ pub(crate) fn read_cookie_field(
     if ui.add(edit).changed() {
         *dirty = true;
     }
+}
+
+/// Swift-parity reset label: "Resets at 19:20 · in 3h 10m" for a session, or
+/// "Resets on 13/06 at 21:00 · in 5d 3h 55m" for the weekly limits. Pulls the
+/// local date/time and a long-form remaining string. Returns just the absolute
+/// half if the date is in the past.
+fn format_meter_reset(at: DateTime<Utc>, include_date: bool) -> String {
+    use chrono::Local;
+    let local = at.with_timezone(&Local);
+    let base = if include_date {
+        format!("Resets on {} at {}", local.format("%d/%m"), local.format("%H:%M"))
+    } else {
+        format!("Resets at {}", local.format("%H:%M"))
+    };
+    let secs = at.signed_duration_since(Utc::now()).num_seconds();
+    if secs <= 0 {
+        return base;
+    }
+    let minutes = (secs / 60) % 60;
+    let hours = (secs / 3600) % 24;
+    let days = secs / 86_400;
+    let rem = if days > 0 {
+        if hours > 0 {
+            format!("{}d {}h {}m", days, hours, minutes)
+        } else {
+            format!("{}d {}m", days, minutes)
+        }
+    } else if hours > 0 {
+        format!("{}h {}m", hours, minutes)
+    } else {
+        format!("{}m", minutes)
+    };
+    format!("{} · in {}", base, rem)
 }
 
 fn format_relative_short(at: DateTime<Utc>) -> String {

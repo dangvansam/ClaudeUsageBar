@@ -32,8 +32,9 @@ use crate::storage::Storage;
 use crate::tray::TrayController;
 
 const CURRENT_VERSION: &str = env!("CARGO_PKG_VERSION");
-const REFRESH_INTERVAL_SECS: u64 = 300;
+// Status fetch is cheaper than usage and rarely changes; keep it fixed at 10 min.
 const STATUS_INTERVAL_SECS: u64 = 600;
+// Update poll cadence when auto-check is on. Gated by `auto_check_for_updates`.
 const UPDATE_INTERVAL_SECS: u64 = 3600;
 
 fn main() -> Result<()> {
@@ -95,8 +96,18 @@ fn worker_loop(state: SharedState, cmd_rx: Receiver<UiCommand>, want_quit: Arc<A
             handle_command(&state, &claude, &update_client, cmd, &mut last_refresh);
         }
 
+        // Read current poll cadence + auto-update flag from settings each tick so
+        // that flipping the toggles in the popup takes effect within 500 ms.
+        let (refresh_interval, auto_check) = {
+            let st = state.lock();
+            (
+                Duration::from_secs(st.settings.refresh_interval_seconds.max(60) as u64),
+                st.settings.auto_check_for_updates,
+            )
+        };
+
         let now = Instant::now();
-        if now.duration_since(last_refresh) >= Duration::from_secs(REFRESH_INTERVAL_SECS) {
+        if now.duration_since(last_refresh) >= refresh_interval {
             refresh_usage(&state, &claude);
             last_refresh = now;
         }
@@ -104,7 +115,7 @@ fn worker_loop(state: SharedState, cmd_rx: Receiver<UiCommand>, want_quit: Arc<A
             refresh_status(&state, &status_client);
             last_status = now;
         }
-        if now.duration_since(last_update) >= Duration::from_secs(UPDATE_INTERVAL_SECS) {
+        if auto_check && now.duration_since(last_update) >= Duration::from_secs(UPDATE_INTERVAL_SECS) {
             refresh_update(&state, &update_client);
             last_update = now;
         }
@@ -276,8 +287,10 @@ fn run_ui(
 
     let viewport = ViewportBuilder::default()
         .with_title("Claude Usage")
-        .with_inner_size([380.0, 460.0])
-        .with_min_inner_size([340.0, 360.0])
+        // 440x500 mirrors the macOS popover popup (440 wide so reset strings fit
+        // on one line). Settings expands the window to 920x680 dynamically.
+        .with_inner_size([440.0, 500.0])
+        .with_min_inner_size([400.0, 360.0])
         .with_visible(false)
         .with_decorations(true)
         .with_always_on_top()
@@ -482,11 +495,18 @@ fn pump_once(
     let (percent, label, want_hotkey, show_percent, icon_style, accent) = {
         let st = shared.state.lock();
         let percent = st.usage.as_ref().map(|u| u.session_percent());
-        let label = match (st.usage.as_ref(), st.last_error.as_ref()) {
-            (Some(u), _) => format!("Claude · {}% (5h)", u.session_percent()),
-            (None, Some(err)) => format!("Claude · {}", err),
-            (None, None) => "Claude · waiting…".into(),
+        let session_reset = st.usage.as_ref().and_then(|u| u.session.resets_at);
+        let countdown = if st.settings.show_time_in_tray {
+            session_reset.and_then(compact_time_remaining)
+        } else {
+            None
         };
+        let label = build_tray_label(
+            st.usage.as_ref().map(|u| u.session_percent()),
+            st.last_error.as_deref(),
+            st.settings.show_percent_in_tray,
+            countdown.as_deref(),
+        );
         (
             percent,
             label,
@@ -524,6 +544,60 @@ fn pump_once(
 fn toggle_popup(shared: &TrayShared, ctx: &eframe::egui::Context, show: bool) {
     shared.visible.store(show, Ordering::SeqCst);
     ctx.request_repaint();
+}
+
+/// Compact remaining-time string suitable for the tray strip ("45m", "3h10m",
+/// "2d4h"). Returns `None` if `at` is in the past. Mirrors Swift
+/// `compactTimeRemaining`.
+fn compact_time_remaining(at: chrono::DateTime<chrono::Utc>) -> Option<String> {
+    let secs = at.signed_duration_since(chrono::Utc::now()).num_seconds();
+    if secs <= 0 {
+        return None;
+    }
+    let minutes = (secs / 60) % 60;
+    let hours = (secs / 3600) % 24;
+    let days = secs / 86_400;
+    Some(if days > 0 {
+        if hours > 0 { format!("{}d{}h", days, hours) } else { format!("{}d", days) }
+    } else if hours > 0 {
+        format!("{}h{}m", hours, minutes)
+    } else {
+        format!("{}m", minutes)
+    })
+}
+
+/// Build the tray title shown next to the icon: "Claude · 10% (3h10m)" /
+/// "Claude · 10%" / "Claude · (3h10m)" / "Claude · waiting…". Mirrors the
+/// Swift `updateStatusIcon` parts-builder so labels stay terse.
+fn build_tray_label(
+    percent: Option<u8>,
+    error: Option<&str>,
+    show_percent: bool,
+    countdown: Option<&str>,
+) -> String {
+    if let Some(err) = error {
+        if percent.is_none() {
+            return format!("Claude · {}", err);
+        }
+    }
+    let mut parts: Vec<String> = Vec::with_capacity(2);
+    if show_percent {
+        if let Some(p) = percent {
+            parts.push(format!("{}% (5h)", p));
+        }
+    }
+    if let Some(rem) = countdown {
+        parts.push(format!("({})", rem));
+    }
+    if parts.is_empty() {
+        if percent.is_some() {
+            "Claude".into()
+        } else {
+            "Claude · waiting…".into()
+        }
+    } else {
+        format!("Claude · {}", parts.join(" "))
+    }
 }
 
 /// Short human-readable reset time for the notification template's `{reset}`.

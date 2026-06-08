@@ -63,6 +63,20 @@ pub struct Settings {
     pub hotkey_enabled: bool,
     #[serde(default)]
     pub show_percent_in_tray: bool,
+    // Compact "(3h10m)" countdown next to the tray icon. Mirrors Swift
+    // showTimeInTray; off by default to keep the tray label terse.
+    #[serde(default)]
+    pub show_time_in_tray: bool,
+    // Render the Anthropic status line in the popover. Mirrors Swift
+    // showServiceStatus; off by default so the popup stays meter-focused.
+    #[serde(default)]
+    pub show_service_status: bool,
+    // Toggle the background update poll. On by default.
+    #[serde(default = "default_true")]
+    pub auto_check_for_updates: bool,
+    // Worker poll interval for usage + status. Stored seconds (60 | 300 | 900).
+    #[serde(default = "default_refresh_interval")]
+    pub refresh_interval_seconds: u32,
     #[serde(default)]
     pub launch_at_login: bool,
     #[serde(default)]
@@ -90,6 +104,10 @@ impl Default for Settings {
             status_notifications_enabled: true,
             hotkey_enabled: true,
             show_percent_in_tray: false,
+            show_time_in_tray: false,
+            show_service_status: false,
+            auto_check_for_updates: true,
+            refresh_interval_seconds: default_refresh_interval(),
             launch_at_login: false,
             theme: ThemeMode::default(),
             accent: Accent::default(),
@@ -109,6 +127,10 @@ fn default_true() -> bool {
 
 fn default_warn_threshold() -> u8 {
     80
+}
+
+fn default_refresh_interval() -> u32 {
+    300
 }
 
 fn default_notif_template() -> String {

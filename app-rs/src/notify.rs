@@ -35,9 +35,46 @@ impl Notifier {
     }
 
     /// Fire a one-off toast with already-rendered body — used by the Settings
-    /// → Notifications "Preview notification" button.
-    pub fn send_preview(body: &str) {
-        Self::send("Claude Usage Bar", body);
+    /// → Notifications "Preview notification" button. Returns true on delivery,
+    /// false if the OS notification service rejected the request (denied
+    /// permission, no D-Bus on Linux, toast capability off on Windows) so the
+    /// caller can surface a fallback modal.
+    pub fn send_preview(body: &str) -> bool {
+        Self::send_checked("Claude Usage Bar (Preview)", body)
+    }
+
+    /// Best-effort link to the platform's notification settings page, used by
+    /// the Preview fallback so users can re-enable notifications in one click.
+    pub fn open_system_notification_settings() {
+        #[cfg(target_os = "windows")]
+        {
+            let _ = std::process::Command::new("cmd")
+                .args(["/C", "start", "ms-settings:notifications"])
+                .spawn();
+        }
+        #[cfg(target_os = "linux")]
+        {
+            // Try the popular DEs in order; if all fail the user can find the
+            // setting manually. Spawning is fire-and-forget.
+            for cmd in &["gnome-control-center notifications", "systemsettings5 kcm_notifications"] {
+                let mut parts = cmd.split_whitespace();
+                if let Some(bin) = parts.next() {
+                    if std::process::Command::new(bin)
+                        .args(parts.collect::<Vec<_>>())
+                        .spawn()
+                        .is_ok()
+                    {
+                        return;
+                    }
+                }
+            }
+        }
+        #[cfg(target_os = "macos")]
+        {
+            let _ = std::process::Command::new("open")
+                .arg("x-apple.systempreferences:com.apple.preference.notifications")
+                .spawn();
+        }
     }
 
     pub fn reset_threshold_if_dropped(percent: u8, last_notified: u8) -> u8 {
@@ -68,6 +105,10 @@ impl Notifier {
     }
 
     fn send(title: &str, body: &str) {
+        let _ = Self::send_checked(title, body);
+    }
+
+    fn send_checked(title: &str, body: &str) -> bool {
         let mut n = Notification::new();
         n.summary(title).body(body).appname("ClaudeUsageBar");
         #[cfg(target_os = "windows")]
@@ -78,8 +119,12 @@ impl Notifier {
         {
             n.icon("claude-usage-bar");
         }
-        if let Err(e) = n.show() {
-            log::warn!("notification failed: {}", e);
+        match n.show() {
+            Ok(_) => true,
+            Err(e) => {
+                log::warn!("notification failed: {}", e);
+                false
+            }
         }
     }
 }

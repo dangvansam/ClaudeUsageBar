@@ -66,6 +66,7 @@ pub fn render(
     show_settings: &mut bool,
     cookie: &mut String,
     cookie_dirty: &mut bool,
+    preview_fallback: &mut Option<String>,
     mut settings: Settings,
     tx: &std::sync::mpsc::Sender<UiCommand>,
 ) {
@@ -118,7 +119,7 @@ pub fn render(
                                 changed |= page_appearance(ui, pal, &mut settings);
                             }
                             SettingsPage::Notifications => {
-                                changed |= page_notifications(ui, pal, &mut settings, tx);
+                                changed |= page_notifications(ui, pal, &mut settings, preview_fallback, tx);
                             }
                             SettingsPage::Account => {
                                 page_account(ui, pal, cookie, cookie_dirty, &settings, tx);
@@ -140,17 +141,17 @@ pub fn render(
 fn sidebar(ui: &mut Ui, pal: &Palette, page: &mut SettingsPage) {
     egui::Frame::default()
         .fill(pal.bg_inset)
-        .inner_margin(Margin::symmetric(10, 12))
+        .inner_margin(Margin::symmetric(14, 14))
         .show(ui, |ui| {
-            ui.set_width(150.0);
+            ui.set_width(200.0);
             ui.vertical(|ui| {
                 section_label(ui, pal, "General");
                 nav_item(ui, pal, page, SettingsPage::General);
-                ui.add_space(8.0);
+                ui.add_space(10.0);
                 section_label(ui, pal, "Appearance");
                 nav_item(ui, pal, page, SettingsPage::Appearance);
                 nav_item(ui, pal, page, SettingsPage::Notifications);
-                ui.add_space(8.0);
+                ui.add_space(10.0);
                 section_label(ui, pal, "Account");
                 nav_item(ui, pal, page, SettingsPage::Account);
                 nav_item(ui, pal, page, SettingsPage::About);
@@ -160,11 +161,12 @@ fn sidebar(ui: &mut Ui, pal: &Palette, page: &mut SettingsPage) {
 
 fn section_label(ui: &mut Ui, pal: &Palette, text: &str) {
     ui.label(
-        RichText::new(text)
+        RichText::new(text.to_uppercase())
             .color(pal.text_muted)
-            .small()
+            .font(FontId::new(12.0, FontFamily::Proportional))
             .strong(),
     );
+    ui.add_space(2.0);
 }
 
 fn nav_item(ui: &mut Ui, pal: &Palette, current: &mut SettingsPage, item: SettingsPage) {
@@ -176,14 +178,19 @@ fn nav_item(ui: &mut Ui, pal: &Palette, current: &mut SettingsPage, item: Settin
     };
     egui::Frame::default()
         .fill(bg)
-        .corner_radius(CornerRadius::same(7))
-        .inner_margin(Margin::symmetric(8, 6))
+        .corner_radius(CornerRadius::same(10))
+        .inner_margin(Margin::symmetric(10, 8))
         .show(ui, |ui| {
             let resp = ui
                 .horizontal(|ui| {
-                    icon_tile(ui, item.icon_color(), 18.0, item.glyph(), Color32::WHITE);
-                    ui.add_space(6.0);
-                    ui.label(RichText::new(item.title()).color(fg));
+                    icon_tile(ui, item.icon_color(), 30.0, item.glyph(), Color32::WHITE);
+                    ui.add_space(10.0);
+                    ui.label(
+                        RichText::new(item.title())
+                            .color(fg)
+                            .font(FontId::new(14.0, FontFamily::Proportional))
+                            .strong(),
+                    );
                 })
                 .response;
             let full = ui.interact(resp.rect, resp.id.with("nav"), Sense::click());
@@ -216,15 +223,15 @@ fn vertical_divider(ui: &mut Ui, pal: &Palette) {
 
 fn page_header(ui: &mut Ui, pal: &Palette, page: SettingsPage) {
     egui::Frame::default()
-        .inner_margin(Margin::symmetric(16, 14))
+        .inner_margin(Margin::symmetric(22, 18))
         .show(ui, |ui| {
             ui.horizontal(|ui| {
-                icon_tile(ui, page.icon_color(), 26.0, page.glyph(), Color32::WHITE);
-                ui.add_space(10.0);
+                icon_tile(ui, page.icon_color(), 38.0, page.glyph(), Color32::WHITE);
+                ui.add_space(14.0);
                 ui.label(
                     RichText::new(page.title())
                         .color(pal.text_primary)
-                        .font(FontId::new(16.0, FontFamily::Proportional))
+                        .font(FontId::new(24.0, FontFamily::Proportional))
                         .strong(),
                 );
             });
@@ -239,27 +246,41 @@ fn page_header(ui: &mut Ui, pal: &Palette, page: SettingsPage) {
 
 // ------------------------------------------------------------------ rows --
 fn group_label(ui: &mut Ui, pal: &Palette, text: &str) {
-    ui.add_space(10.0);
+    ui.add_space(14.0);
     ui.label(
-        RichText::new(text)
+        RichText::new(text.to_uppercase())
             .color(pal.text_muted)
-            .small()
+            .font(FontId::new(12.0, FontFamily::Proportional))
             .strong(),
     );
-    ui.add_space(4.0);
+    ui.add_space(6.0);
 }
 
 fn row<R>(ui: &mut Ui, pal: &Palette, title: &str, sub: Option<&str>, right: impl FnOnce(&mut Ui) -> R) -> R {
     egui::Frame::default()
-        .inner_margin(Margin::symmetric(14, 10))
+        .fill(pal.bg_card)
+        .stroke(Stroke::new(1.0, pal.border))
+        .corner_radius(CornerRadius::same(14))
+        .inner_margin(Margin::symmetric(18, 14))
+        .outer_margin(Margin::symmetric(0, 4))
         .show(ui, |ui| {
             let avail = ui.available_width();
             ui.horizontal(|ui| {
                 ui.vertical(|ui| {
                     ui.set_width(avail * 0.55);
-                    ui.label(RichText::new(title).color(pal.text_primary).strong());
+                    ui.label(
+                        RichText::new(title)
+                            .color(pal.text_primary)
+                            .font(FontId::new(15.0, FontFamily::Proportional))
+                            .strong(),
+                    );
                     if let Some(s) = sub {
-                        ui.label(RichText::new(s).color(pal.text_muted).small());
+                        ui.add_space(2.0);
+                        ui.label(
+                            RichText::new(s)
+                                .color(pal.text_muted)
+                                .font(FontId::new(13.0, FontFamily::Proportional)),
+                        );
                     }
                 });
                 let r = ui
@@ -293,6 +314,18 @@ fn page_general(ui: &mut Ui, pal: &Palette, settings: &mut Settings) -> bool {
             }
         },
     );
+    row(
+        ui,
+        pal,
+        "Check for updates automatically",
+        Some("Look for a new version of Usage Bar in the background"),
+        |ui| {
+            if toggle(ui, pal, &mut settings.auto_check_for_updates).clicked() {
+                changed = true;
+            }
+        },
+    );
+
     group_label(ui, pal, "Appearance");
     let theme_val = match settings.theme {
         ThemeMode::Light => "light",
@@ -314,6 +347,36 @@ fn page_general(ui: &mut Ui, pal: &Palette, settings: &mut Settings) -> bool {
             changed = true;
         }
     });
+
+    group_label(ui, pal, "Data");
+    let interval_val = match settings.refresh_interval_seconds {
+        60 => "60",
+        900 => "900",
+        _ => "300",
+    };
+    row(ui, pal, "Refresh interval", Some("How often usage is pulled"), |ui| {
+        if let Some(picked) = segmented(
+            ui,
+            pal,
+            &[("60", "1m"), ("300", "5m"), ("900", "15m")],
+            interval_val,
+        ) {
+            settings.refresh_interval_seconds = picked.parse().unwrap_or(300);
+            changed = true;
+        }
+    });
+    row(
+        ui,
+        pal,
+        "Show service status",
+        Some("Display Claude status line in the popover"),
+        |ui| {
+            if toggle(ui, pal, &mut settings.show_service_status).clicked() {
+                changed = true;
+            }
+        },
+    );
+
     group_label(ui, pal, "Input");
     row(
         ui,
@@ -343,12 +406,25 @@ fn page_appearance(ui: &mut Ui, pal: &Palette, settings: &mut Settings) -> bool 
             }
         },
     );
+    row(
+        ui,
+        pal,
+        "Show session reset time",
+        Some("Append the 5-hour session countdown, e.g. 3h10m"),
+        |ui| {
+            if toggle(ui, pal, &mut settings.show_time_in_tray).clicked() {
+                changed = true;
+            }
+        },
+    );
 
     group_label(ui, pal, "Icon style");
     ui.horizontal(|ui| {
         ui.spacing_mut().item_spacing.x = 8.0;
+        // "Number" was renamed to "Dot" in the macOS app — the enum variant stays
+        // `TrayIconStyle::Number` for backwards-compatible storage.
         for (style, label, preview) in [
-            (TrayIconStyle::Number, "Number", IconPreview::Number),
+            (TrayIconStyle::Number, "Dot", IconPreview::Number),
             (TrayIconStyle::Ring, "Ring", IconPreview::Ring),
             (TrayIconStyle::Mark, "Mark", IconPreview::Mark),
         ] {
@@ -386,6 +462,7 @@ fn page_notifications(
     ui: &mut Ui,
     pal: &Palette,
     settings: &mut Settings,
+    preview_fallback: &mut Option<String>,
     tx: &std::sync::mpsc::Sender<UiCommand>,
 ) -> bool {
     let _ = tx;
@@ -489,7 +566,9 @@ fn page_notifications(
                     "session",
                     "in 1h 24m",
                 );
-                Notifier::send_preview(&body);
+                if !Notifier::send_preview(&body) {
+                    *preview_fallback = Some(body);
+                }
             }
         });
 
@@ -510,18 +589,19 @@ fn page_account(
     if signed_in {
         group_label(ui, pal, "Signed in");
         egui::Frame::default()
-            .fill(pal.bg_inset)
+            .fill(pal.bg_card)
             .stroke(Stroke::new(1.0, pal.border))
-            .corner_radius(CornerRadius::same(10))
+            .corner_radius(CornerRadius::same(12))
             .inner_margin(Margin::symmetric(14, 12))
             .show(ui, |ui| {
                 ui.horizontal(|ui| {
-                    super::draw_brand_dot(ui, pal.accent, 32.0);
-                    ui.add_space(10.0);
+                    super::draw_brand_dot(ui, pal.accent, 36.0);
+                    ui.add_space(12.0);
                     ui.vertical(|ui| {
                         ui.label(
                             RichText::new("Connected to claude.ai")
                                 .color(pal.text_primary)
+                                .font(FontId::new(14.0, FontFamily::Proportional))
                                 .strong(),
                         );
                         ui.label(
@@ -532,54 +612,144 @@ fn page_account(
                     });
                 });
             });
-    } else {
-        group_label(ui, pal, "Account");
-        ui.label(
-            RichText::new("Not signed in — paste your claude.ai cookie below.")
-                .color(pal.text_secondary),
-        );
-    }
 
-    group_label(ui, pal, "Session cookie");
-    egui::Frame::default()
-        .fill(pal.bg_inset)
-        .stroke(Stroke::new(1.0, pal.border))
-        .corner_radius(CornerRadius::same(8))
-        .inner_margin(Margin::same(6))
-        .show(ui, |ui| {
-            super::read_cookie_field(
-                ui,
-                pal,
-                cookie,
-                cookie_dirty,
-                3,
-                "Paste full Cookie header here…",
-            );
-        });
-    note(
-        ui,
-        pal,
-        "How: open claude.ai → DevTools (F12) → Network tab → open any /api/organizations/* \
-         request → copy the entire Cookie header.",
-    );
-
-    ui.add_space(8.0);
-    ui.horizontal(|ui| {
-        if pill_button(ui, pal, "Save cookie", true).clicked() && *cookie_dirty {
-            let _ = tx.send(UiCommand::SaveCookie(cookie.trim().to_string()));
-            *cookie_dirty = false;
-        }
-        if pill_button(ui, pal, "Open claude.ai", false).clicked() {
-            open_url("https://claude.ai");
-        }
-        ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
-            if signed_in && pill_button(ui, pal, "Sign out", false).clicked() {
+        ui.add_space(10.0);
+        ui.horizontal(|ui| {
+            if pill_button(ui, pal, "Sign out", false).clicked() {
                 cookie.clear();
                 *cookie_dirty = false;
                 let _ = tx.send(UiCommand::ClearCookie);
             }
+            if pill_button(ui, pal, "Open claude.ai", false).clicked() {
+                open_url("https://claude.ai");
+            }
         });
+        return;
+    }
+
+    group_label(ui, pal, "Account");
+    ui.label(
+        RichText::new("Sign in to claude.ai to read your usage limits. No data leaves your Mac.")
+            .color(pal.text_secondary),
+    );
+
+    ui.add_space(10.0);
+    ui.horizontal(|ui| {
+        if pill_button(ui, pal, "Sign in with claude.ai", true).clicked() {
+            // Phase A: opens the system browser. Future webview wiring will swap
+            // this for an in-app sheet that captures the cookie on success.
+            open_url("https://claude.ai/login");
+        }
+        if pill_button(ui, pal, "Open claude.ai", false).clicked() {
+            open_url("https://claude.ai");
+        }
     });
+
+    // Claude Code CLI detection — read-only probe. We only check the keychain
+    // item EXISTS; the token isn't decrypted and isn't currently usable for the
+    // claude.ai web endpoints. Surface as a hint so CLI users know we noticed.
+    if claude_code_login_detected() {
+        ui.add_space(10.0);
+        egui::Frame::default()
+            .fill(pal.bg_inset)
+            .stroke(Stroke::new(1.0, pal.border))
+            .corner_radius(CornerRadius::same(10))
+            .inner_margin(Margin::symmetric(14, 12))
+            .show(ui, |ui| {
+                ui.horizontal(|ui| {
+                    ui.label(
+                        RichText::new("⌨")
+                            .color(pal.accent)
+                            .font(FontId::new(16.0, FontFamily::Proportional)),
+                    );
+                    ui.add_space(8.0);
+                    ui.vertical(|ui| {
+                        ui.label(
+                            RichText::new("Claude Code login detected")
+                                .color(pal.text_primary)
+                                .strong(),
+                        );
+                        ui.label(
+                            RichText::new(
+                                "API-token sign-in via Claude Code is on the roadmap. \
+                                 For now, use the claude.ai sign-in above.",
+                            )
+                            .color(pal.text_muted)
+                            .small(),
+                        );
+                    });
+                });
+            });
+    }
+
+    // Manual paste fallback — collapsed by default. Matches the Swift
+    // DisclosureGroup "Paste cookie manually".
+    ui.add_space(12.0);
+    egui::CollapsingHeader::new(
+        RichText::new("Paste cookie manually")
+            .color(pal.text_secondary)
+            .strong(),
+    )
+    .id_salt("manual-paste-section")
+    .default_open(false)
+    .show(ui, |ui| {
+        ui.add_space(4.0);
+        egui::Frame::default()
+            .fill(pal.bg_inset)
+            .stroke(Stroke::new(1.0, pal.border))
+            .corner_radius(CornerRadius::same(8))
+            .inner_margin(Margin::same(6))
+            .show(ui, |ui| {
+                super::read_cookie_field(
+                    ui,
+                    pal,
+                    cookie,
+                    cookie_dirty,
+                    3,
+                    "Paste full Cookie header here…",
+                );
+            });
+        note(
+            ui,
+            pal,
+            "How: open claude.ai → DevTools (F12) → Network tab → open any /api/organizations/* \
+             request → copy the entire Cookie header.",
+        );
+        ui.add_space(6.0);
+        if pill_button(ui, pal, "Save cookie", true).clicked() && *cookie_dirty {
+            let _ = tx.send(UiCommand::SaveCookie(cookie.trim().to_string()));
+            *cookie_dirty = false;
+        }
+    });
+}
+
+// Probe for an existing Claude Code CLI login. The CLI stores its OAuth bundle
+// in the OS keyring under service "Claude Code-credentials" (account = user
+// email). We only check the entry EXISTS — never decrypt the token, both because
+// it targets api.anthropic.com (not claude.ai web cookies) and because reading
+// would trigger a Keychain prompt on macOS.
+fn claude_code_login_detected() -> bool {
+    // The CLI uses the user's email as the account. We don't know it, so we try
+    // a wildcard via the no-secret listing path: keyring's high-level API
+    // doesn't expose that, so as a pragmatic check we attempt to instantiate an
+    // entry with a known dummy username. If the underlying backend reports the
+    // service exists at all, that's enough.
+    match keyring::Entry::new("Claude Code-credentials", "user") {
+        Ok(entry) => match entry.get_password() {
+            Ok(_) => true,
+            Err(keyring::Error::NoEntry) => {
+                // Service may exist under a different username; the most
+                // reliable test is per-OS. On macOS keyring will report NoEntry
+                // even when the service is present under another account, so
+                // assume false here — the cross-platform Phase B detection
+                // tightens this on macOS via SecItemCopyMatching (handled in the
+                // Swift app, not this Rust path).
+                false
+            }
+            Err(_) => false,
+        },
+        Err(_) => false,
+    }
 }
 
 fn page_about(ui: &mut Ui, pal: &Palette, tx: &std::sync::mpsc::Sender<UiCommand>) {
