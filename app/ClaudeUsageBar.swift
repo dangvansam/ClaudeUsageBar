@@ -2,6 +2,7 @@ import SwiftUI
 import AppKit
 import WebKit
 import Carbon
+import UserNotifications
 
 // MARK: - Design System
 // Tokens lifted 1:1 from the Claude Design prototype (website demo.css + the Rust
@@ -90,11 +91,15 @@ func makePalette(isDark: Bool, accent: Accent) -> Palette {
     )
 }
 
-// Tray color uses the 3-tier ramp (low/mid/high) keyed by session percent, matching
-// the Rust app's icon.rs HealthTier (>=87 high, >=70 mid, else low).
+// Tray color mirrors the popup meter exactly (4-tier ramp: low/mid/high/crit),
+// keyed by session percent. Thresholds match `Palette.tierColor`.
 func trayTierNSColor(_ pct: Int, _ accent: Accent) -> NSColor {
-    let (low, mid, high, _) = accentRamp(accent)
-    let hex: UInt32 = pct >= 87 ? high : (pct >= 70 ? mid : low)
+    let (low, mid, high, crit) = accentRamp(accent)
+    let hex: UInt32
+    if pct >= 87 { hex = crit }
+    else if pct >= 70 { hex = high }
+    else if pct >= 45 { hex = mid }
+    else { hex = low }
     return NSColor(hex: hex)
 }
 
@@ -129,10 +134,116 @@ func renderNotificationTemplate(_ template: String, pct: Int, limit: String, res
         .replacingOccurrences(of: "{reset}", with: reset)
 }
 
+// UserNotifications wrapper — handles auth, foreground presentation, and falls
+// back to a plain alert if the system rejects the request (common for ad-hoc
+// signed / unsigned builds where the system Notification Center won't show our
+// banners). The fallback is what lets the Preview button actually do something
+// visible even when notifications aren't fully wired up.
+final class NotificationService: NSObject, UNUserNotificationCenterDelegate {
+    static let shared = NotificationService()
+    private var authorized = false
+    private var requestedAuth = false
+
+    func bootstrap() {
+        let center = UNUserNotificationCenter.current()
+        center.delegate = self
+        center.getNotificationSettings { [weak self] settings in
+            DispatchQueue.main.async {
+                self?.authorized = (settings.authorizationStatus == .authorized
+                    || settings.authorizationStatus == .provisional)
+                if settings.authorizationStatus == .notDetermined {
+                    self?.requestAuthorization()
+                }
+            }
+        }
+    }
+
+    func requestAuthorization() {
+        guard !requestedAuth else { return }
+        requestedAuth = true
+        UNUserNotificationCenter.current().requestAuthorization(options: [.alert, .sound, .badge]) { [weak self] granted, _ in
+            DispatchQueue.main.async {
+                self?.authorized = granted
+            }
+        }
+    }
+
+    func send(title: String, body: String, sound: Bool = true, isPreview: Bool = false) {
+        let center = UNUserNotificationCenter.current()
+        let content = UNMutableNotificationContent()
+        content.title = title
+        content.body = body
+        if sound { content.sound = .default }
+
+        let request = UNNotificationRequest(
+            identifier: UUID().uuidString,
+            content: content,
+            trigger: nil
+        )
+        center.add(request) { [weak self] error in
+            if let error = error {
+                NSLog("❌ Notification delivery failed: \(error.localizedDescription)")
+                if isPreview {
+                    DispatchQueue.main.async {
+                        self?.showFallbackAlert(title: title, body: body, reason: error.localizedDescription)
+                    }
+                }
+                return
+            }
+            // Re-check authorization. If still .denied, surface a fallback so
+            // the preview button isn't silent on ad-hoc builds.
+            if isPreview {
+                center.getNotificationSettings { settings in
+                    if settings.authorizationStatus == .denied {
+                        DispatchQueue.main.async {
+                            self?.showFallbackAlert(
+                                title: title,
+                                body: body,
+                                reason: "Notifications are denied for this app in System Settings → Notifications → ClaudeUsageBar."
+                            )
+                        }
+                    }
+                }
+            }
+        }
+    }
+
+    private func showFallbackAlert(title: String, body: String, reason: String) {
+        let alert = NSAlert()
+        alert.messageText = title
+        alert.informativeText = "\(body)\n\n\(reason)"
+        alert.alertStyle = .informational
+        alert.addButton(withTitle: "Open System Settings")
+        alert.addButton(withTitle: "OK")
+        NSApp.activate(ignoringOtherApps: true)
+        let response = alert.runModal()
+        if response == .alertFirstButtonReturn {
+            if let url = URL(string: "x-apple.systempreferences:com.apple.preference.notifications") {
+                NSWorkspace.shared.open(url)
+            }
+        }
+    }
+
+    // Show banners even when the app is in the foreground (popup open). Without
+    // this delegate, UN suppresses notifications when our app is frontmost.
+    func userNotificationCenter(
+        _ center: UNUserNotificationCenter,
+        willPresent notification: UNNotification,
+        withCompletionHandler completionHandler: @escaping (UNNotificationPresentationOptions) -> Void
+    ) {
+        completionHandler([.banner, .sound, .list])
+    }
+}
+
 // Main entry point
-class AppDelegate: NSObject, NSApplicationDelegate {
+class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
     var statusItem: NSStatusItem!
-    var popover: NSPopover!
+    var popupPanel: NSPanel?
+    var popupHosting: NSHostingController<UsageView>?
+    var settingsWindow: NSWindow?
+    var settingsHosting: NSHostingController<UsageView>?
+    var refreshTimer: Timer?
+    var updateCheckTimer: Timer?
     var usageManager: UsageManager!
     var statusManager: StatusManager!
     var updateManager: UpdateManager!
@@ -140,7 +251,10 @@ class AppDelegate: NSObject, NSApplicationDelegate {
     var hotKeyRef: EventHotKeyRef?
 
     func applicationDidFinishLaunching(_ notification: Notification) {
-        // NSUserNotification (deprecated but works without permissions for unsigned apps)
+        // Bootstrap UserNotifications (auth + foreground delegate). For ad-hoc
+        // builds the system may still deny banners — the service shows an alert
+        // fallback for the Preview button so it's never silent.
+        NotificationService.shared.bootstrap()
         NSLog("✅ App launched, notifications ready")
 
         // Create status bar item with variable length for compact display
@@ -163,31 +277,18 @@ class AppDelegate: NSObject, NSApplicationDelegate {
         statusManager = StatusManager()
         updateManager = UpdateManager()
 
-        // Create popover
-        popover = NSPopover()
-        // Initial guess; SwiftUI's intrinsic size (capped at 600) will drive the actual size.
-        popover.contentSize = NSSize(width: 360, height: 320)
-        popover.behavior = .transient
-        popover.contentViewController = NSHostingController(rootView: UsageView(
-            usageManager: usageManager,
-            statusManager: statusManager,
-            updateManager: updateManager
-        ))
-
         // Fetch initial data
         usageManager.fetchUsage()
         statusManager.fetch()
         updateManager.fetch()
 
-        // Usage + Anthropic status are time-sensitive — poll every 5 min.
-        Timer.scheduledTimer(withTimeInterval: 300, repeats: true) { _ in
-            self.usageManager.fetchUsage()
-            self.statusManager.fetch()
-        }
+        rescheduleRefreshTimer()
+        rescheduleUpdateCheckTimer()
 
-        // App updates are infrequent (new release at most weekly) — poll every 3 hours.
-        Timer.scheduledTimer(withTimeInterval: 3 * 3600, repeats: true) { _ in
-            self.updateManager.fetch()
+        // Tick every minute so the tray countdown stays current when enabled.
+        Timer.scheduledTimer(withTimeInterval: 60, repeats: true) { [weak self] _ in
+            guard let self = self, self.usageManager?.showTimeInTray == true else { return }
+            self.usageManager.refreshTray()
         }
 
         // Set up Cmd+U keyboard shortcut
@@ -300,8 +401,88 @@ class AppDelegate: NSObject, NSApplicationDelegate {
         NSApplication.shared.terminate(nil)
     }
 
+    @objc func rescheduleRefreshTimer() {
+        refreshTimer?.invalidate()
+        let interval = TimeInterval(max(60, usageManager?.refreshIntervalSeconds ?? 300))
+        refreshTimer = Timer.scheduledTimer(withTimeInterval: interval, repeats: true) { [weak self] _ in
+            self?.usageManager.fetchUsage()
+            self?.statusManager.fetch()
+        }
+    }
+
+    @objc func rescheduleUpdateCheckTimer() {
+        updateCheckTimer?.invalidate()
+        guard usageManager?.autoCheckForUpdates == true else { return }
+        updateCheckTimer = Timer.scheduledTimer(withTimeInterval: 3 * 3600, repeats: true) { [weak self] _ in
+            self?.updateManager.fetch()
+        }
+    }
+
+    // Pin the popup panel + settings window to the user-selected theme so the
+    // NSVisualEffectView material matches the SwiftUI palette (otherwise material
+    // tracks the system appearance while palette tracks the in-app setting).
+    func appearanceForUserTheme() -> NSAppearance? {
+        switch usageManager?.theme {
+        case .light: return NSAppearance(named: .aqua)
+        case .dark: return NSAppearance(named: .darkAqua)
+        default: return nil
+        }
+    }
+
+    func applyAppearanceToWindows() {
+        let appearance = appearanceForUserTheme()
+        popupPanel?.appearance = appearance
+        settingsWindow?.appearance = appearance
+    }
+
+    @objc func openSettingsWindow() {
+        closePopover()
+        if let existing = settingsWindow {
+            existing.makeKeyAndOrderFront(nil)
+            NSApp.activate(ignoringOtherApps: true)
+            return
+        }
+        let content = UsageView(
+            usageManager: usageManager,
+            statusManager: statusManager,
+            updateManager: updateManager,
+            settingsWindowMode: true
+        )
+        let hosting = NSHostingController(rootView: content)
+        settingsHosting = hosting
+
+        let window = NSWindow(
+            contentRect: NSRect(x: 0, y: 0, width: 920, height: 680),
+            styleMask: [.titled, .closable, .miniaturizable],
+            backing: .buffered,
+            defer: false
+        )
+        window.title = "Claude Usage Bar — Settings"
+        window.backgroundColor = .clear
+        window.isMovableByWindowBackground = true
+        window.contentViewController = hosting
+        window.isReleasedWhenClosed = false
+        window.center()
+        window.delegate = self
+        settingsWindow = window
+        applyAppearanceToWindows()
+        NSApp.activate(ignoringOtherApps: true)
+        window.makeKeyAndOrderFront(nil)
+    }
+
+    @objc func closeSettingsWindow() {
+        settingsWindow?.close()
+    }
+
+    func windowWillClose(_ notification: Notification) {
+        if let closing = notification.object as? NSWindow, closing == settingsWindow {
+            settingsWindow = nil
+            settingsHosting = nil
+        }
+    }
+
     @objc func togglePopover() {
-        if popover.isShown {
+        if popupPanel?.isVisible == true {
             closePopover()
         } else {
             openPopover()
@@ -329,27 +510,122 @@ class AppDelegate: NSObject, NSApplicationDelegate {
     }
 
     func openPopover() {
-        if let button = statusItem.button {
-            // Force UI refresh by updating percentages
-            DispatchQueue.main.async {
-                self.usageManager.updatePercentages()
-            }
+        guard statusItem.button != nil else { return }
 
-            popover.show(relativeTo: button.bounds, of: button, preferredEdge: .minY)
+        if popupPanel == nil {
+            let hosting = NSHostingController(rootView: UsageView(
+                usageManager: usageManager,
+                statusManager: statusManager,
+                updateManager: updateManager
+            ))
+            popupHosting = hosting
 
-            // Add event monitor to detect clicks outside the popover
-            eventMonitor = NSEvent.addGlobalMonitorForEvents(matching: [.leftMouseDown, .rightMouseDown]) { [weak self] event in
-                if self?.popover.isShown == true {
-                    self?.closePopover()
-                }
-            }
+            let panel = NSPanel(
+                contentRect: NSRect(x: 0, y: 0, width: 440, height: 400),
+                styleMask: [.borderless, .nonactivatingPanel, .fullSizeContentView],
+                backing: .buffered,
+                defer: false
+            )
+            panel.contentViewController = hosting
+            panel.isReleasedWhenClosed = false
+            panel.backgroundColor = .clear
+            panel.isOpaque = false
+            panel.hasShadow = true
+            panel.level = .statusBar
+            panel.collectionBehavior = [.canJoinAllSpaces, .fullScreenAuxiliary, .transient]
+            panel.hidesOnDeactivate = false
+            // Round the host to match SwiftUI's popover material clipping.
+            hosting.view.wantsLayer = true
+            hosting.view.layer?.cornerRadius = 10
+            hosting.view.layer?.masksToBounds = true
+
+            popupPanel = panel
+        }
+
+        DispatchQueue.main.async {
+            self.usageManager.updatePercentages()
+        }
+
+        applyAppearanceToWindows()
+        positionPopupPanel()
+        popupPanel?.orderFrontRegardless()
+
+        // Re-anchor on next runloop tick once SwiftUI has measured intrinsic size,
+        // so the panel sits flush under the icon at its real height.
+        DispatchQueue.main.async { [weak self] in
+            self?.positionPopupPanel()
+        }
+
+        eventMonitor = NSEvent.addGlobalMonitorForEvents(matching: [.leftMouseDown, .rightMouseDown]) { [weak self] _ in
+            self?.closePopover()
         }
     }
 
-    func closePopover() {
-        popover.performClose(nil)
+    // Resize the popup panel to match SwiftUI's measured content size, then
+    // re-anchor under the icon so the bottom stays inside the visible frame.
+    func syncPopupPanelSize() {
+        guard let panel = popupPanel, let host = popupHosting?.view else { return }
+        let target = host.fittingSize
+        if target.width <= 0 || target.height <= 0 { return }
+        let current = panel.frame.size
+        if abs(current.width - target.width) < 0.5 && abs(current.height - target.height) < 0.5 { return }
+        var frame = panel.frame
+        // Keep the same top edge so the panel doesn't appear to jump.
+        let topY = frame.maxY
+        frame.size = target
+        frame.origin.y = topY - target.height
+        panel.setFrame(frame, display: true)
+        positionPopupPanel()
+    }
 
-        // Remove event monitor
+    func positionPopupPanel() {
+        guard let panel = popupPanel,
+              let button = statusItem.button,
+              let buttonWindow = button.window else { return }
+        let buttonScreenFrame = buttonWindow.convertToScreen(button.convert(button.bounds, to: nil))
+        let screen = buttonWindow.screen ?? NSScreen.main ?? NSScreen.screens.first!
+        let visible = screen.visibleFrame
+        let panelSize = panel.frame.size
+        let gap: CGFloat = 4
+
+        // Decide which edge of the visible frame the status item sits on.
+        // macOS status bar is normally top, but Stage Manager / external screens
+        // can shift the visible region; pick the edge closest to the icon.
+        let dTop = abs(buttonScreenFrame.minY - visible.maxY)
+        let dBottom = abs(buttonScreenFrame.maxY - visible.minY)
+        let dLeft = abs(buttonScreenFrame.minX - visible.minX)
+        let dRight = abs(buttonScreenFrame.maxX - visible.maxX)
+        let minDist = min(dTop, dBottom, dLeft, dRight)
+
+        var origin = NSPoint.zero
+        if minDist == dTop {
+            // Bar at top → drop panel below the icon.
+            origin.x = buttonScreenFrame.midX - panelSize.width / 2
+            origin.y = buttonScreenFrame.minY - panelSize.height - gap
+        } else if minDist == dBottom {
+            // Bar at bottom → pop panel above the icon.
+            origin.x = buttonScreenFrame.midX - panelSize.width / 2
+            origin.y = buttonScreenFrame.maxY + gap
+        } else if minDist == dLeft {
+            // Bar at left → fly out to the right.
+            origin.x = buttonScreenFrame.maxX + gap
+            origin.y = buttonScreenFrame.midY - panelSize.height / 2
+        } else {
+            // Bar at right → fly out to the left.
+            origin.x = buttonScreenFrame.minX - panelSize.width - gap
+            origin.y = buttonScreenFrame.midY - panelSize.height / 2
+        }
+
+        // Clamp inside the visible frame so nothing slides under the menu bar.
+        origin.x = max(visible.minX + gap, min(origin.x, visible.maxX - panelSize.width - gap))
+        origin.y = max(visible.minY + gap, min(origin.y, visible.maxY - panelSize.height - gap))
+
+        panel.setFrameOrigin(origin)
+    }
+
+    func closePopover() {
+        popupPanel?.orderOut(nil)
+
         if let monitor = eventMonitor {
             NSEvent.removeMonitor(monitor)
             eventMonitor = nil
@@ -364,33 +640,43 @@ class AppDelegate: NSObject, NSApplicationDelegate {
         let style: TrayIconStyle
         let accent: Accent
         let showPct: Bool
+        let showTime: Bool
+        let resetDate: Date?
         if let manager = usageManager {
             style = manager.trayIconStyle
             accent = manager.accent
             showPct = manager.showPercentInTray
+            showTime = manager.showTimeInTray
+            resetDate = manager.sessionResetsAt
         } else {
             style = .mark
             accent = .warm
             showPct = true
+            showTime = false
+            resetDate = nil
         }
 
         // Color tracks the session tier (amber → red), replacing green/yellow/red.
         let color = trayTierNSColor(percentage, accent)
 
-        // Number style with the percentage hidden has nothing to show → Mark.
-        let effective: TrayIconStyle = (style == .number && !showPct) ? .mark : style
+        // Build the trailing title: " 10% (1h10m)" / " 10%" / " (1h10m)" / "".
+        var parts: [String] = []
+        if showPct { parts.append("\(percentage)%") }
+        if showTime, let date = resetDate, let rem = compactTimeRemaining(date) {
+            parts.append("(\(rem))")
+        }
+        let title = parts.isEmpty ? "" : " " + parts.joined(separator: " ")
 
-        switch effective {
+        switch style {
         case .ring:
             button.image = createRingIcon(color: color, percentage: percentage)
-            button.title = showPct ? " \(percentage)%" : ""
         case .mark:
             button.image = createSparkIcon(color: color)
-            button.title = ""
         case .number:
-            button.image = createSparkIcon(color: color)
-            button.title = " \(percentage)%"
+            button.image = createDotIcon(color: color)
         }
+        button.title = title
+        button.attributedTitle = NSAttributedString(string: button.title)
     }
 
     func createRingIcon(color: NSColor, percentage: Int) -> NSImage {
@@ -427,6 +713,35 @@ class AppDelegate: NSObject, NSApplicationDelegate {
         image.isTemplate = false
 
         return image
+    }
+
+    func createDotIcon(color: NSColor) -> NSImage {
+        let size = NSSize(width: 16, height: 16)
+        let image = NSImage(size: size)
+        image.lockFocus()
+        let radius: CGFloat = 4.0
+        let rect = NSRect(x: 8 - radius, y: 8 - radius, width: radius * 2, height: radius * 2)
+        let path = NSBezierPath(ovalIn: rect)
+        color.setFill()
+        path.fill()
+        image.unlockFocus()
+        image.isTemplate = false
+        return image
+    }
+
+    // Compact remaining time for the tray strip. Returns nil if past or unavailable.
+    // Examples: "45m", "3h10m", "2d4h", "1d".
+    func compactTimeRemaining(_ date: Date) -> String? {
+        let total = Int(date.timeIntervalSinceNow)
+        if total <= 0 { return nil }
+        let minutes = (total / 60) % 60
+        let hours = (total / 3600) % 24
+        let days = total / 86400
+        if days > 0 {
+            return hours > 0 ? "\(days)d\(hours)h" : "\(days)d"
+        }
+        if hours > 0 { return "\(hours)h\(minutes)m" }
+        return "\(minutes)m"
     }
 
     func createSparkIcon(color: NSColor) -> NSImage {
@@ -516,6 +831,10 @@ class UsageManager: ObservableObject {
     @Published var accent: Accent = .warm
     @Published var trayIconStyle: TrayIconStyle = .number
     @Published var showPercentInTray: Bool = true
+    @Published var showTimeInTray: Bool = false
+    @Published var showServiceStatus: Bool = false
+    @Published var autoCheckForUpdates: Bool = true
+    @Published var refreshIntervalSeconds: Int = 300
     @Published var sessionWarnThreshold: Int = 80
     @Published var weeklyWarnThreshold: Int = 80
     @Published var notifMessageTemplate: String =
@@ -590,6 +909,19 @@ class UsageManager: ObservableObject {
         if UserDefaults.standard.object(forKey: "show_percent_in_tray") != nil {
             showPercentInTray = UserDefaults.standard.bool(forKey: "show_percent_in_tray")
         }
+        if UserDefaults.standard.object(forKey: "show_time_in_tray") != nil {
+            showTimeInTray = UserDefaults.standard.bool(forKey: "show_time_in_tray")
+        }
+        if UserDefaults.standard.object(forKey: "show_service_status") != nil {
+            showServiceStatus = UserDefaults.standard.bool(forKey: "show_service_status")
+        }
+        if UserDefaults.standard.object(forKey: "auto_check_for_updates") != nil {
+            autoCheckForUpdates = UserDefaults.standard.bool(forKey: "auto_check_for_updates")
+        }
+        let storedInterval = UserDefaults.standard.integer(forKey: "refresh_interval_seconds")
+        if [60, 300, 900].contains(storedInterval) {
+            refreshIntervalSeconds = storedInterval
+        }
         if UserDefaults.standard.object(forKey: "session_warn_threshold") != nil {
             sessionWarnThreshold = UserDefaults.standard.integer(forKey: "session_warn_threshold")
         }
@@ -610,6 +942,10 @@ class UsageManager: ObservableObject {
         UserDefaults.standard.set(accent.rawValue, forKey: "accent")
         UserDefaults.standard.set(trayIconStyle.rawValue, forKey: "tray_icon_style")
         UserDefaults.standard.set(showPercentInTray, forKey: "show_percent_in_tray")
+        UserDefaults.standard.set(showTimeInTray, forKey: "show_time_in_tray")
+        UserDefaults.standard.set(showServiceStatus, forKey: "show_service_status")
+        UserDefaults.standard.set(autoCheckForUpdates, forKey: "auto_check_for_updates")
+        UserDefaults.standard.set(refreshIntervalSeconds, forKey: "refresh_interval_seconds")
         UserDefaults.standard.set(sessionWarnThreshold, forKey: "session_warn_threshold")
         UserDefaults.standard.set(weeklyWarnThreshold, forKey: "weekly_warn_threshold")
         UserDefaults.standard.set(notifMessageTemplate, forKey: "notif_message_template")
@@ -892,18 +1228,20 @@ class UsageManager: ObservableObject {
 
     func sendUsageNotification(pct: Int, limit: String, reset: String) {
         let body = renderNotificationTemplate(notifMessageTemplate, pct: pct, limit: limit, reset: reset)
-        let notification = NSUserNotification()
-        notification.title = "Claude Usage Alert"
-        notification.informativeText = body
-        notification.soundName = NSUserNotificationDefaultSoundName
-        NSUserNotificationCenter.default.deliver(notification)
+        NotificationService.shared.send(title: "Claude Usage Alert", body: body)
     }
 
     func sendTestNotification() {
-        sendUsageNotification(
+        let body = renderNotificationTemplate(
+            notifMessageTemplate,
             pct: sessionWarnThreshold,
             limit: "session",
             reset: relativeResetText(sessionResetsAt)
+        )
+        NotificationService.shared.send(
+            title: "Claude Usage Alert (Preview)",
+            body: body,
+            isPreview: true
         )
     }
 
@@ -1124,16 +1462,16 @@ class StatusManager: ObservableObject {
     private func notifyStatusChange(to indicator: String, description: String) {
         guard UserDefaults.standard.bool(forKey: "status_notifications_enabled") else { return }
 
-        let notification = NSUserNotification()
+        let title: String
+        let body: String
         if indicator == "none" {
-            notification.title = "Claude is back online"
-            notification.informativeText = "All systems operational"
+            title = "Claude is back online"
+            body = "All systems operational"
         } else {
-            notification.title = "Claude status: \(description)"
-            notification.informativeText = "Visit status.anthropic.com for details"
+            title = "Claude status: \(description)"
+            body = "Visit status.anthropic.com for details"
         }
-        notification.soundName = NSUserNotificationDefaultSoundName
-        NSUserNotificationCenter.default.deliver(notification)
+        NotificationService.shared.send(title: title, body: body)
         NSLog("📬 Sent status-change notification: \(indicator)")
     }
 }
@@ -1236,11 +1574,10 @@ class UpdateManager: ObservableObject {
                 // Update notifications fire regardless of usage/status toggles — they're
                 // version-once and tied to user-initiated upgrade flow, not noise.
                 if lastNotified != version {
-                    let n = NSUserNotification()
-                    n.title = "ClaudeUsageBar \(version) is available"
-                    n.informativeText = title
-                    n.soundName = NSUserNotificationDefaultSoundName
-                    NSUserNotificationCenter.default.deliver(n)
+                    NotificationService.shared.send(
+                        title: "ClaudeUsageBar \(version) is available",
+                        body: title
+                    )
                     UserDefaults.standard.set(version, forKey: "last_notified_update_version")
                     NSLog("📬 Sent update notification for \(version)")
                 }
@@ -1412,10 +1749,218 @@ private struct ContentHeightKey: PreferenceKey {
     }
 }
 
+// NSVisualEffectView wrapper for native macOS vibrancy / liquid-glass background.
+// Behind-window blending dimmed for popups (`.popover`/`.hudWindow`) and the
+// settings shell (`.windowBackground`), with a `.sidebar` variant for nav strips.
+struct VisualEffectBackground: NSViewRepresentable {
+    var material: NSVisualEffectView.Material = .popover
+    var blendingMode: NSVisualEffectView.BlendingMode = .behindWindow
+    var emphasized: Bool = false
+
+    func makeNSView(context: Context) -> NSVisualEffectView {
+        let view = NSVisualEffectView()
+        view.material = material
+        view.blendingMode = blendingMode
+        view.state = .followsWindowActiveState
+        view.isEmphasized = emphasized
+        view.autoresizingMask = [.width, .height]
+        return view
+    }
+
+    func updateNSView(_ nsView: NSVisualEffectView, context: Context) {
+        nsView.material = material
+        nsView.blendingMode = blendingMode
+        nsView.isEmphasized = emphasized
+    }
+}
+
+// MARK: - Auto-acquire claude.ai cookie
+
+// Probe for an existing Claude Code CLI login. The CLI stores its OAuth bundle
+// in the system Keychain under service "Claude Code-credentials". We only check
+// for existence — never read the actual token (a) because it's for the API host
+// (api.anthropic.com), not the claude.ai web endpoints this app uses, and (b) to
+// avoid surfacing a Keychain prompt the user can't act on yet.
+enum ClaudeCodeAuthProbe {
+    static func detect() -> Bool {
+        let query: [String: Any] = [
+            kSecClass as String: kSecClassGenericPassword,
+            kSecAttrService as String: "Claude Code-credentials",
+            kSecMatchLimit as String: kSecMatchLimitOne,
+            kSecReturnAttributes as String: true,
+            kSecUseAuthenticationUI as String: kSecUseAuthenticationUISkip,
+        ]
+        var result: AnyObject?
+        let status = SecItemCopyMatching(query as CFDictionary, &result)
+        return status == errSecSuccess || status == errSecInteractionNotAllowed
+    }
+}
+
+// In-app claude.ai login sheet. Hosts a WKWebView, polls its cookie store, and
+// emits the full Cookie-header string the moment a `sessionKey` for .claude.ai
+// appears. Format matches what the manual paste flow expects so downstream
+// fetch code (fetchOrganizationId / fetchUsage) needs no changes.
+struct ClaudeLoginSheet: View {
+    let onCookieCaptured: (String) -> Void
+    let onCancel: () -> Void
+
+    @State private var loading: Bool = true
+    @State private var capturing: Bool = false
+
+    var body: some View {
+        VStack(spacing: 0) {
+            HStack(spacing: 8) {
+                Image(systemName: "person.crop.circle.badge.checkmark")
+                    .foregroundColor(.accentColor)
+                Text("Sign in to claude.ai")
+                    .font(.system(size: 14, weight: .semibold))
+                Spacer()
+                if loading || capturing {
+                    ProgressView().controlSize(.small)
+                }
+                Button("Cancel") { onCancel() }
+                    .keyboardShortcut(.cancelAction)
+            }
+            .padding(.horizontal, 14)
+            .padding(.vertical, 10)
+            Divider()
+
+            ClaudeLoginWebView(
+                onCookieCaptured: { cookie in
+                    capturing = true
+                    onCookieCaptured(cookie)
+                },
+                onLoadingChange: { loading = $0 }
+            )
+            .frame(width: 520, height: 640)
+
+            Divider()
+            HStack(spacing: 6) {
+                Image(systemName: "info.circle").foregroundColor(.secondary)
+                Text("Tip: use email or Apple sign-in. Google sign-in is blocked inside in-app web views by Google.")
+                    .font(.system(size: 11))
+                    .foregroundColor(.secondary)
+                    .fixedSize(horizontal: false, vertical: true)
+                Spacer()
+            }
+            .padding(.horizontal, 14)
+            .padding(.vertical, 8)
+        }
+    }
+}
+
+// Shared persistent web data store for the login sheet. macOS 14+ supports
+// named persistent stores via `.init(forIdentifier:)`; on macOS 12/13 we fall
+// back to the default store (still persists across launches, but shared with
+// any other webview the app might add later).
+enum ClaudeLoginDataStore {
+    static let shared: WKWebsiteDataStore = {
+        if #available(macOS 14.0, *) {
+            // Stable UUID derived from a constant string so the store name is
+            // identical across launches and the cookie jar persists.
+            let id = UUID(uuidString: "C1A07E10-1234-4DEF-A001-CLAUDELOGIN") ?? UUID()
+            return WKWebsiteDataStore(forIdentifier: id)
+        }
+        return WKWebsiteDataStore.default()
+    }()
+}
+
+struct ClaudeLoginWebView: NSViewRepresentable {
+    let onCookieCaptured: (String) -> Void
+    let onLoadingChange: (Bool) -> Void
+
+    func makeCoordinator() -> Coordinator {
+        Coordinator(onCookieCaptured: onCookieCaptured, onLoadingChange: onLoadingChange)
+    }
+
+    func makeNSView(context: Context) -> WKWebView {
+        let config = WKWebViewConfiguration()
+        config.websiteDataStore = ClaudeLoginDataStore.shared
+        config.preferences.javaScriptCanOpenWindowsAutomatically = false
+
+        let webView = WKWebView(frame: .zero, configuration: config)
+        webView.navigationDelegate = context.coordinator
+        webView.customUserAgent = nil // use system Safari UA — better Cloudflare success
+        webView.load(URLRequest(url: URL(string: "https://claude.ai/login")!))
+        context.coordinator.webView = webView
+        context.coordinator.startCookiePolling()
+        return webView
+    }
+
+    func updateNSView(_ nsView: WKWebView, context: Context) {}
+
+    static func dismantleNSView(_ nsView: WKWebView, coordinator: Coordinator) {
+        coordinator.stopCookiePolling()
+    }
+
+    final class Coordinator: NSObject, WKNavigationDelegate {
+        let onCookieCaptured: (String) -> Void
+        let onLoadingChange: (Bool) -> Void
+        weak var webView: WKWebView?
+        private var pollTimer: Timer?
+        private var captured = false
+
+        init(onCookieCaptured: @escaping (String) -> Void,
+             onLoadingChange: @escaping (Bool) -> Void) {
+            self.onCookieCaptured = onCookieCaptured
+            self.onLoadingChange = onLoadingChange
+        }
+
+        func startCookiePolling() {
+            // Cookies arrive after navigation completes; poll the store every
+            // second until a `sessionKey` for .claude.ai shows up. Stop on capture.
+            pollTimer?.invalidate()
+            pollTimer = Timer.scheduledTimer(withTimeInterval: 1.0, repeats: true) { [weak self] _ in
+                self?.checkCookies()
+            }
+        }
+
+        func stopCookiePolling() {
+            pollTimer?.invalidate()
+            pollTimer = nil
+        }
+
+        private func checkCookies() {
+            guard !captured, let webView = webView else { return }
+            webView.configuration.websiteDataStore.httpCookieStore.getAllCookies { [weak self] cookies in
+                guard let self = self, !self.captured else { return }
+                let claudeCookies = cookies.filter { c in
+                    let d = c.domain.lowercased()
+                    return d.hasSuffix("claude.ai")
+                }
+                guard claudeCookies.contains(where: { $0.name == "sessionKey" }) else { return }
+                self.captured = true
+                self.stopCookiePolling()
+                let serialized = claudeCookies
+                    .map { "\($0.name)=\($0.value)" }
+                    .joined(separator: "; ")
+                DispatchQueue.main.async {
+                    self.onCookieCaptured(serialized)
+                }
+            }
+        }
+
+        func webView(_ webView: WKWebView, didStartProvisionalNavigation navigation: WKNavigation!) {
+            onLoadingChange(true)
+        }
+        func webView(_ webView: WKWebView, didFinish navigation: WKNavigation!) {
+            onLoadingChange(false)
+            checkCookies()
+        }
+        func webView(_ webView: WKWebView, didFail navigation: WKNavigation!, withError error: Error) {
+            onLoadingChange(false)
+        }
+        func webView(_ webView: WKWebView, didFailProvisionalNavigation navigation: WKNavigation!, withError error: Error) {
+            onLoadingChange(false)
+        }
+    }
+}
+
 struct UsageView: View {
     @ObservedObject var usageManager: UsageManager
     @ObservedObject var statusManager: StatusManager
     @ObservedObject var updateManager: UpdateManager
+    var settingsWindowMode: Bool = false
     @State private var sessionCookieInput: String = ""
     @State private var showingCookieInput: Bool = false
     @State private var showingSettings: Bool = false
@@ -1438,32 +1983,47 @@ struct UsageView: View {
     }
 
     var body: some View {
-        ScrollView {
-            Group {
-                if showingSettings {
-                    settingsScene
-                } else {
-                    content
+        if settingsWindowMode {
+            windowSettingsScene
+                .frame(width: 920, height: 680, alignment: .topLeading)
+                .background(
+                    VisualEffectBackground(material: .windowBackground, blendingMode: .behindWindow)
+                        .ignoresSafeArea()
+                )
+                .onAppear {
+                    if let savedCookie = UserDefaults.standard.string(forKey: "claude_session_cookie") {
+                        sessionCookieInput = String(savedCookie.prefix(20)) + "..."
+                    }
+                    usageManager.updatePercentages()
                 }
-            }
-            .padding(showingSettings ? 0 : 16)
-            .background(
-                GeometryReader { geo in
-                    Color.clear.preference(key: ContentHeightKey.self, value: geo.size.height)
+        } else {
+            ScrollView {
+                Group {
+                    if showingSettings {
+                        settingsScene
+                    } else {
+                        content
+                    }
                 }
-            )
-        }
-        .frame(width: showingSettings ? 470 : 360, height: min(max(measuredHeight, 100), maxPopupHeight))
-        .background(pal.bgStage)
-        .onPreferenceChange(ContentHeightKey.self) { value in
-            guard value > 0 else { return }
-            measuredHeight = value
-        }
-        .onAppear {
-            if let savedCookie = UserDefaults.standard.string(forKey: "claude_session_cookie") {
-                sessionCookieInput = String(savedCookie.prefix(20)) + "..."
+                .padding(showingSettings ? 0 : 16)
+                .background(
+                    GeometryReader { geo in
+                        Color.clear.preference(key: ContentHeightKey.self, value: geo.size.height)
+                    }
+                )
             }
-            usageManager.updatePercentages()
+            .frame(width: showingSettings ? 470 : 440, height: min(max(measuredHeight, 100), maxPopupHeight))
+            .background(VisualEffectBackground(material: .popover, blendingMode: .behindWindow))
+            .onPreferenceChange(ContentHeightKey.self) { value in
+                guard value > 0 else { return }
+                measuredHeight = value
+            }
+            .onAppear {
+                if let savedCookie = UserDefaults.standard.string(forKey: "claude_session_cookie") {
+                    sessionCookieInput = String(savedCookie.prefix(20)) + "..."
+                }
+                usageManager.updatePercentages()
+            }
         }
     }
 
@@ -1530,244 +2090,46 @@ struct UsageView: View {
                 meterRow(
                     name: "Session (5 hour)",
                     pct: Int(usageManager.sessionPercentage * 100),
-                    reset: usageManager.sessionResetsAt.map { "Resets \(formatResetTime($0))" }
+                    reset: usageManager.sessionResetsAt.map { resetLabel($0, includeDate: false) }
                 )
 
                 meterRow(
                     name: "Weekly (7 day)",
                     pct: Int(usageManager.weeklyPercentage * 100),
-                    reset: usageManager.weeklyResetsAt.map { "Resets \(formatResetTime($0, includeDate: true))" }
+                    reset: usageManager.weeklyResetsAt.map { resetLabel($0, includeDate: true) }
                 )
 
                 if usageManager.hasWeeklySonnet {
                     meterRow(
                         name: "Weekly Sonnet (7 day)",
                         pct: Int(usageManager.weeklySonnetPercentage * 100),
-                        reset: usageManager.weeklySonnetResetsAt.map { "Resets \(formatResetTime($0, includeDate: true))" }
+                        reset: usageManager.weeklySonnetResetsAt.map { resetLabel($0, includeDate: true) }
                     )
                 }
             }
 
-            if statusManager.hasFetched {
+            if usageManager.showServiceStatus && statusManager.hasFetched {
                 Divider()
-            }
-
-            // Anthropic service status (compact; expandable on issue)
-            if statusManager.hasFetched {
-                let effective = statusManager.effectiveIndicator
-                let filteredIncidents = statusManager.filteredIncidents
-                let filteredAffected = statusManager.filteredAffectedComponents
-                let hasIssue = effective != "none"
-                    && (!filteredIncidents.isEmpty || !filteredAffected.isEmpty)
-
-                VStack(alignment: .leading, spacing: 8) {
-                    // Compact header row
-                    HStack(alignment: .top, spacing: 6) {
-                        Circle()
-                            .fill(statusColor(for: effective))
-                            .frame(width: 8, height: 8)
-                            .padding(.top, 4)
-                        VStack(alignment: .leading, spacing: 2) {
-                            Text(effective == "none"
-                                 ? "All Claude services operational"
-                                 : statusManager.statusDescription)
-                                .font(.caption)
-                                .foregroundColor(.secondary)
-                                .fixedSize(horizontal: false, vertical: true)
-                            Text(statusContextLine(for: statusManager))
-                                .font(.system(size: 10))
-                                .foregroundColor(.secondary)
-                                .fixedSize(horizontal: false, vertical: true)
-                        }
-                        Spacer()
-                        if hasIssue {
-                            Button(action: { showingStatusDetails.toggle() }) {
-                                HStack(spacing: 2) {
-                                    Text(showingStatusDetails ? "Hide" : "Details")
-                                    Image(systemName: showingStatusDetails ? "chevron.up" : "chevron.down")
-                                        .font(.system(size: 8))
-                                }
-                                .font(.caption2)
-                            }
-                            .buttonStyle(.borderless)
+                HStack(alignment: .top, spacing: 8) {
+                    Circle()
+                        .fill(statusColor(for: statusManager.effectiveIndicator))
+                        .frame(width: 8, height: 8)
+                        .padding(.top, 4)
+                    VStack(alignment: .leading, spacing: 2) {
+                        Text(statusManager.effectiveIndicator == "none"
+                             ? "All Claude services operational"
+                             : statusManager.statusDescription)
+                            .font(.system(size: 12))
+                            .foregroundColor(pal.textSecondary)
+                            .fixedSize(horizontal: false, vertical: true)
+                        if let lastCheck = statusManager.lastUpdated {
+                            Text("Checked \(relativeTime(lastCheck))")
+                                .font(.system(size: 11))
+                                .foregroundColor(pal.textMuted)
                         }
                     }
-
-                    // Expanded panel
-                    if hasIssue && showingStatusDetails {
-                        VStack(alignment: .leading, spacing: 12) {
-                            ForEach(filteredIncidents) { incident in
-                                VStack(alignment: .leading, spacing: 6) {
-                                    // Title
-                                    Text(incident.name)
-                                        .font(.system(size: 12, weight: .semibold))
-                                        .fixedSize(horizontal: false, vertical: true)
-
-                                    // Status badge + updated time
-                                    HStack(spacing: 8) {
-                                        Text(incident.status.uppercased())
-                                            .font(.system(size: 9, weight: .bold))
-                                            .foregroundColor(.white)
-                                            .padding(.horizontal, 6)
-                                            .padding(.vertical, 2)
-                                            .background(badgeColor(for: incident.status))
-                                            .cornerRadius(3)
-                                        if let updated = incident.updatedAt {
-                                            Text("Updated \(relativeTime(updated))")
-                                                .font(.caption2)
-                                                .foregroundColor(.secondary)
-                                        }
-                                    }
-
-                                    // Body
-                                    if !incident.latestUpdate.isEmpty {
-                                        Text(incident.latestUpdate)
-                                            .font(.caption)
-                                            .foregroundColor(.primary)
-                                            .fixedSize(horizontal: false, vertical: true)
-                                            .padding(.top, 2)
-                                    }
-                                }
-                            }
-
-                            // Affected components (when no formal incident)
-                            if filteredIncidents.isEmpty && !filteredAffected.isEmpty {
-                                VStack(alignment: .leading, spacing: 4) {
-                                    Text("Affected services")
-                                        .font(.caption2)
-                                        .fontWeight(.semibold)
-                                        .foregroundColor(.secondary)
-                                    ForEach(filteredAffected) { c in
-                                        HStack(spacing: 6) {
-                                            Circle()
-                                                .fill(pal.lvMid)
-                                                .frame(width: 5, height: 5)
-                                            Text(c.name).font(.caption2)
-                                            Spacer()
-                                            Text(componentLabel(c.status))
-                                                .font(.caption2)
-                                                .foregroundColor(.secondary)
-                                        }
-                                    }
-                                }
-                            }
-
-                            Divider()
-
-                            HStack {
-                                if let lastCheck = statusManager.lastUpdated {
-                                    Text("Checked \(relativeTime(lastCheck))")
-                                        .font(.caption2)
-                                        .foregroundColor(.secondary)
-                                }
-                                Spacer()
-                                Button(action: {
-                                    NSWorkspace.shared.open(URL(string: "https://status.claude.com")!)
-                                }) {
-                                    Text("Open status page →")
-                                        .font(.caption2)
-                                }
-                                .buttonStyle(.borderless)
-                            }
-                        }
-                        .padding(10)
-                        .background(pal.lvMid.opacity(0.12))
-                        .cornerRadius(6)
-                    }
+                    Spacer()
                 }
-            }
-
-            if usageManager.hasFetchedData {
-            Divider()
-
-            HStack {
-                Text("Last updated: \(formatTime(usageManager.lastUpdated))")
-                    .font(.caption)
-                    .foregroundColor(pal.textMuted)
-                Spacer()
-                Button("Refresh") {
-                    usageManager.fetchUsage()
-                    statusManager.fetch()
-                    updateManager.fetch()
-                }
-                .buttonStyle(.borderless)
-                .font(.system(size: 13, weight: .medium))
-                .foregroundColor(pal.accent)
-            }
-            }
-
-            Button(showingCookieInput ? "Hide Cookie" : "Set Session Cookie") {
-                showingCookieInput.toggle()
-            }
-            .buttonStyle(.borderless)
-            .font(.caption)
-
-            if showingCookieInput {
-                VStack(alignment: .leading, spacing: 8) {
-                    HStack {
-                        Text("How to get your session cookie:")
-                            .font(.caption)
-                            .fontWeight(.semibold)
-                        Spacer()
-                        Button(action: {
-                            NSWorkspace.shared.open(URL(string: "https://github.com/Artzainnn/ClaudeUsageBar/blob/main/setup-guide.png")!)
-                        }) {
-                            Text("View tutorial →")
-                                .font(.caption2)
-                                .foregroundColor(pal.accent)
-                        }
-                        .buttonStyle(.borderless)
-                    }
-
-                    VStack(alignment: .leading, spacing: 4) {
-                        Text("1. Go to Settings > Usage on claude.ai")
-                        Text("2. Press F12 (or Cmd+Option+I)")
-                        Text("3. Go to Network tab")
-                        Text("4. Refresh page, click 'usage' request")
-                        Text("5. Find 'Cookie' in Request Headers")
-                        Text("6. Copy full cookie value\n   (starts with anthropic-device-id=...)")
-                    }
-                    .font(.caption2)
-                    .foregroundColor(.secondary)
-
-                    VStack(alignment: .leading, spacing: 4) {
-                        Text("Paste full cookie string:")
-                            .font(.caption2)
-                            .foregroundColor(.secondary)
-                        VStack(spacing: 4) {
-                            PasteableTextField(text: $sessionCookieInput, placeholder: "Paste cookie here...")
-                                .frame(height: 60)
-                                .cornerRadius(4)
-
-                            HStack(spacing: 8) {
-                                Button("Save Cookie & Fetch") {
-                                    NSLog("ClaudeUsage: Save clicked, input length: \(sessionCookieInput.count)")
-                                    if sessionCookieInput.isEmpty {
-                                        usageManager.errorMessage = "Cookie field is empty!"
-                                    } else {
-                                        usageManager.saveSessionCookie(sessionCookieInput)
-                                        usageManager.fetchUsage()
-                                        usageManager.errorMessage = "Cookie saved, fetching..."
-                                    }
-                                }
-                                .buttonStyle(.borderedProminent)
-                                .controlSize(.small)
-
-                                if usageManager.hasFetchedData {
-                                    Button("Clear Cookie") {
-                                        sessionCookieInput = ""
-                                        usageManager.clearSessionCookie()
-                                    }
-                                    .buttonStyle(.bordered)
-                                    .controlSize(.small)
-                                }
-                            }
-                        }
-                    }
-                }
-                .padding(8)
-                .background(Color.secondary.opacity(0.1))
-                .cornerRadius(6)
             }
 
             // Support + Settings footer
@@ -1786,7 +2148,9 @@ struct UsageView: View {
 
                 Spacer()
 
-                Button(action: { showingSettings = true }) {
+                Button(action: {
+                    (NSApp.delegate as? AppDelegate)?.openSettingsWindow()
+                }) {
                     HStack(spacing: 6) {
                         Image(systemName: "gearshape")
                         Text("Settings")
@@ -1900,6 +2264,40 @@ struct UsageView: View {
         }
     }
 
+    var windowSettingsScene: some View {
+        HStack(alignment: .top, spacing: 0) {
+            VStack(alignment: .leading, spacing: 4) {
+                groupLabel("General")
+                navItem(.general)
+                groupLabel("Appearance")
+                navItem(.appearance)
+                navItem(.notifications)
+                groupLabel("Account")
+                navItem(.account)
+                navItem(.about)
+                Spacer(minLength: 0)
+            }
+            .padding(.horizontal, 14)
+            .padding(.vertical, 14)
+            .frame(width: 200, alignment: .topLeading)
+            .frame(maxHeight: .infinity, alignment: .topLeading)
+            .background(VisualEffectBackground(material: .sidebar, blendingMode: .behindWindow))
+            .overlay(Rectangle().frame(width: 1).foregroundColor(pal.border), alignment: .trailing)
+
+            ScrollView {
+                VStack(alignment: .leading, spacing: 0) {
+                    pageHeader
+                    settingsPageView
+                        .padding(.horizontal, 22)
+                        .padding(.vertical, 18)
+                }
+                .frame(maxWidth: .infinity, alignment: .topLeading)
+            }
+            .frame(maxWidth: .infinity, maxHeight: .infinity)
+        }
+        .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
+    }
+
     var settingsSidebar: some View {
         VStack(alignment: .leading, spacing: 2) {
             groupLabel("General")
@@ -1920,24 +2318,24 @@ struct UsageView: View {
     func navItem(_ tab: SettingsTab) -> some View {
         let active = settingsPage == tab
         return Button(action: { settingsPage = tab }) {
-            HStack(spacing: 10) {
+            HStack(spacing: 12) {
                 ZStack {
-                    RoundedRectangle(cornerRadius: 6)
-                        .fill(active ? Color.white.opacity(0.22) : tab.tileColor)
-                        .frame(width: 22, height: 22)
+                    RoundedRectangle(cornerRadius: 8)
+                        .fill(active ? Color.white.opacity(0.25) : tab.tileColor)
+                        .frame(width: 30, height: 30)
                     Image(systemName: tab.sfSymbol)
-                        .font(.system(size: 11, weight: .semibold))
+                        .font(.system(size: 14, weight: .semibold))
                         .foregroundColor(.white)
                 }
                 Text(tab.title)
-                    .font(.system(size: 13, weight: .medium))
+                    .font(.system(size: 14, weight: .semibold))
                     .foregroundColor(active ? pal.onAccent : pal.textPrimary)
                     .lineLimit(1)
                 Spacer(minLength: 0)
             }
-            .padding(.horizontal, 8)
-            .padding(.vertical, 7)
-            .background(RoundedRectangle(cornerRadius: 7).fill(active ? pal.accent : Color.clear))
+            .padding(.horizontal, 10)
+            .padding(.vertical, 8)
+            .background(RoundedRectangle(cornerRadius: 10).fill(active ? pal.accent : Color.clear))
             .contentShape(Rectangle())
         }
         .buttonStyle(.plain)
@@ -1945,22 +2343,22 @@ struct UsageView: View {
 
     var pageHeader: some View {
         VStack(spacing: 0) {
-            HStack(spacing: 10) {
+            HStack(spacing: 14) {
                 ZStack {
-                    RoundedRectangle(cornerRadius: 7)
+                    RoundedRectangle(cornerRadius: 10)
                         .fill(settingsPage.tileColor)
-                        .frame(width: 26, height: 26)
+                        .frame(width: 38, height: 38)
                     Image(systemName: settingsPage.sfSymbol)
-                        .font(.system(size: 13, weight: .semibold))
+                        .font(.system(size: 18, weight: .semibold))
                         .foregroundColor(.white)
                 }
                 Text(settingsPage.title)
-                    .font(.system(size: 16, weight: .bold))
+                    .font(.system(size: 24, weight: .bold))
                     .foregroundColor(pal.textPrimary)
                 Spacer()
             }
-            .padding(.horizontal, 16)
-            .padding(.vertical, 12)
+            .padding(.horizontal, 22)
+            .padding(.vertical, 18)
             Divider()
         }
     }
@@ -1977,7 +2375,7 @@ struct UsageView: View {
     }
 
     var generalPage: some View {
-        VStack(alignment: .leading, spacing: 8) {
+        VStack(alignment: .leading, spacing: 10) {
             groupLabel("Startup")
             settingRow("Launch at login", "Open Usage Bar automatically when you sign in") {
                 toggleSwitch(usageManager.openAtLogin) { v in
@@ -1985,6 +2383,14 @@ struct UsageView: View {
                     usageManager.saveSettings()
                 }
             }
+            settingRow("Check for updates automatically", "Look for a new version of Usage Bar in the background") {
+                toggleSwitch(usageManager.autoCheckForUpdates) { v in
+                    usageManager.autoCheckForUpdates = v
+                    usageManager.saveSettings()
+                    (NSApplication.shared.delegate as? AppDelegate)?.rescheduleUpdateCheckTimer()
+                }
+            }
+
             groupLabel("Appearance")
             settingRow("Theme", "Match your system or pick a side") {
                 segmentedControl(
@@ -1994,8 +2400,28 @@ struct UsageView: View {
                     usageManager.theme = AppTheme(rawValue: v) ?? .system
                     usageManager.saveSettings()
                     usageManager.refreshTray()
+                    (NSApplication.shared.delegate as? AppDelegate)?.applyAppearanceToWindows()
                 }
             }
+
+            groupLabel("Data")
+            settingRow("Refresh interval", "How often usage is pulled") {
+                segmentedControl(
+                    [("60", "1m"), ("300", "5m"), ("900", "15m")],
+                    selected: String(usageManager.refreshIntervalSeconds)
+                ) { v in
+                    usageManager.refreshIntervalSeconds = Int(v) ?? 300
+                    usageManager.saveSettings()
+                    (NSApplication.shared.delegate as? AppDelegate)?.rescheduleRefreshTimer()
+                }
+            }
+            settingRow("Show service status", "Display Claude status line in the popover") {
+                toggleSwitch(usageManager.showServiceStatus) { v in
+                    usageManager.showServiceStatus = v
+                    usageManager.saveSettings()
+                }
+            }
+
             groupLabel("Input")
             settingRow("Global hotkey (⌘U)", "Toggle the popover from anywhere") {
                 toggleSwitch(usageManager.shortcutEnabled) { v in
@@ -2022,9 +2448,16 @@ struct UsageView: View {
                     usageManager.refreshTray()
                 }
             }
+            settingRow("Show session reset time", "Append the 5-hour session countdown, e.g. 3h10m") {
+                toggleSwitch(usageManager.showTimeInTray) { v in
+                    usageManager.showTimeInTray = v
+                    usageManager.saveSettings()
+                    usageManager.refreshTray()
+                }
+            }
             groupLabel("Icon style")
             HStack(spacing: 8) {
-                iconStyleCard(.number, "Number")
+                iconStyleCard(.number, "Dot")
                 iconStyleCard(.ring, "Ring")
                 iconStyleCard(.mark, "Mark")
             }
@@ -2117,7 +2550,7 @@ struct UsageView: View {
     }
 
     var accountPage: some View {
-        VStack(alignment: .leading, spacing: 8) {
+        VStack(alignment: .leading, spacing: 12) {
             if usageManager.hasFetchedData {
                 groupLabel("Signed in")
                 HStack(spacing: 12) {
@@ -2138,40 +2571,106 @@ struct UsageView: View {
                 .padding(14)
                 .background(RoundedRectangle(cornerRadius: 12).fill(pal.bgCard))
                 .overlay(RoundedRectangle(cornerRadius: 12).stroke(pal.border, lineWidth: 1))
-            } else {
-                groupLabel("Account")
-                Text("Not signed in — paste your claude.ai cookie below.")
-                    .font(.system(size: 13))
-                    .foregroundColor(pal.textSecondary)
-            }
-            groupLabel("Session cookie")
-            PasteableTextField(text: $sessionCookieInput, placeholder: "Paste full Cookie header here…")
-                .frame(height: 60)
-                .padding(6)
-                .background(RoundedRectangle(cornerRadius: 10).fill(pal.bgInset))
-                .overlay(RoundedRectangle(cornerRadius: 10).stroke(pal.border, lineWidth: 1))
-            Text("How: claude.ai → DevTools (F12) → Network tab → open any /api/organizations/* request → copy the entire Cookie header.")
-                .font(.system(size: 12))
-                .foregroundColor(pal.textMuted)
-                .fixedSize(horizontal: false, vertical: true)
-            HStack(spacing: 8) {
-                pillButton("Save cookie", primary: true) {
-                    if !sessionCookieInput.isEmpty {
-                        usageManager.saveSessionCookie(sessionCookieInput)
-                        usageManager.fetchUsage()
+
+                HStack(spacing: 8) {
+                    pillButton("Sign out", primary: false) {
+                        sessionCookieInput = ""
+                        usageManager.clearSessionCookie()
                     }
+                    pillButton("Open claude.ai", primary: false) {
+                        NSWorkspace.shared.open(URL(string: "https://claude.ai")!)
+                    }
+                    Spacer()
+                }
+            } else {
+                signedOutAccountSection
+            }
+        }
+    }
+
+    @State private var showingLoginSheet: Bool = false
+    @State private var pasteCookieExpanded: Bool = false
+    @State private var claudeCodeDetected: Bool = false
+
+    var signedOutAccountSection: some View {
+        VStack(alignment: .leading, spacing: 12) {
+            groupLabel("Account")
+            Text("Sign in to claude.ai to read your usage limits. No data leaves your Mac.")
+                .font(.system(size: 13))
+                .foregroundColor(pal.textSecondary)
+                .fixedSize(horizontal: false, vertical: true)
+
+            HStack(spacing: 8) {
+                pillButton("Sign in with claude.ai", primary: true) {
+                    showingLoginSheet = true
                 }
                 pillButton("Open claude.ai", primary: false) {
                     NSWorkspace.shared.open(URL(string: "https://claude.ai")!)
                 }
                 Spacer()
-                if usageManager.hasFetchedData {
-                    pillButton("Sign out", primary: false) {
-                        sessionCookieInput = ""
-                        usageManager.clearSessionCookie()
+            }
+
+            if claudeCodeDetected {
+                HStack(alignment: .top, spacing: 10) {
+                    Image(systemName: "terminal")
+                        .foregroundColor(pal.accent)
+                        .font(.system(size: 14, weight: .medium))
+                        .frame(width: 22, height: 22)
+                    VStack(alignment: .leading, spacing: 2) {
+                        Text("Claude Code login detected")
+                            .font(.system(size: 13, weight: .semibold))
+                            .foregroundColor(pal.textPrimary)
+                        Text("API-token sign-in via Claude Code is on the roadmap. For now, use the claude.ai sign-in above.")
+                            .font(.system(size: 12))
+                            .foregroundColor(pal.textMuted)
+                            .fixedSize(horizontal: false, vertical: true)
                     }
                 }
+                .padding(12)
+                .background(RoundedRectangle(cornerRadius: 10).fill(pal.bgInset))
+                .overlay(RoundedRectangle(cornerRadius: 10).stroke(pal.border, lineWidth: 1))
             }
+
+            DisclosureGroup(isExpanded: $pasteCookieExpanded) {
+                VStack(alignment: .leading, spacing: 8) {
+                    PasteableTextField(text: $sessionCookieInput, placeholder: "Paste full Cookie header here…")
+                        .frame(height: 60)
+                        .padding(6)
+                        .background(RoundedRectangle(cornerRadius: 10).fill(pal.bgInset))
+                        .overlay(RoundedRectangle(cornerRadius: 10).stroke(pal.border, lineWidth: 1))
+                    Text("How: claude.ai → DevTools (F12) → Network tab → open any /api/organizations/* request → copy the entire Cookie header.")
+                        .font(.system(size: 12))
+                        .foregroundColor(pal.textMuted)
+                        .fixedSize(horizontal: false, vertical: true)
+                    HStack(spacing: 8) {
+                        pillButton("Save cookie", primary: true) {
+                            if !sessionCookieInput.isEmpty {
+                                usageManager.saveSessionCookie(sessionCookieInput)
+                                usageManager.fetchUsage()
+                            }
+                        }
+                        Spacer()
+                    }
+                }
+                .padding(.top, 8)
+            } label: {
+                Text("Paste cookie manually")
+                    .font(.system(size: 13, weight: .medium))
+                    .foregroundColor(pal.textSecondary)
+            }
+        }
+        .onAppear {
+            claudeCodeDetected = ClaudeCodeAuthProbe.detect()
+        }
+        .sheet(isPresented: $showingLoginSheet) {
+            ClaudeLoginSheet(
+                onCookieCaptured: { cookie in
+                    usageManager.saveSessionCookie(cookie)
+                    usageManager.fetchUsage()
+                    showingLoginSheet = false
+                },
+                onCancel: { showingLoginSheet = false }
+            )
         }
     }
 
@@ -2216,10 +2715,11 @@ struct UsageView: View {
 
     func groupLabel(_ text: String) -> some View {
         Text(text.uppercased())
-            .font(.system(size: 11, weight: .semibold))
+            .font(.system(size: 12, weight: .semibold))
+            .tracking(0.6)
             .foregroundColor(pal.textMuted)
-            .padding(.top, 10)
-            .padding(.bottom, 2)
+            .padding(.top, 14)
+            .padding(.bottom, 4)
     }
 
     func settingRow<Trailing: View>(
@@ -2227,25 +2727,25 @@ struct UsageView: View {
         _ subtitle: String?,
         @ViewBuilder trailing: () -> Trailing
     ) -> some View {
-        HStack(alignment: .center, spacing: 12) {
-            VStack(alignment: .leading, spacing: 2) {
+        HStack(alignment: .center, spacing: 16) {
+            VStack(alignment: .leading, spacing: 3) {
                 Text(title)
-                    .font(.system(size: 14, weight: .medium))
+                    .font(.system(size: 15, weight: .semibold))
                     .foregroundColor(pal.textPrimary)
                 if let subtitle = subtitle {
                     Text(subtitle)
-                        .font(.system(size: 12))
+                        .font(.system(size: 13))
                         .foregroundColor(pal.textMuted)
                         .fixedSize(horizontal: false, vertical: true)
                 }
             }
-            Spacer()
+            Spacer(minLength: 12)
             trailing()
         }
-        .padding(.horizontal, 14)
-        .padding(.vertical, 11)
-        .background(RoundedRectangle(cornerRadius: 12).fill(pal.bgCard))
-        .overlay(RoundedRectangle(cornerRadius: 12).stroke(pal.border, lineWidth: 1))
+        .padding(.horizontal, 18)
+        .padding(.vertical, 14)
+        .background(RoundedRectangle(cornerRadius: 14).fill(pal.bgCard))
+        .overlay(RoundedRectangle(cornerRadius: 14).stroke(pal.border, lineWidth: 1))
     }
 
     func toggleSwitch(_ value: Bool, _ onChange: @escaping (Bool) -> Void) -> some View {
@@ -2301,7 +2801,7 @@ struct UsageView: View {
     func iconStylePreview(_ style: TrayIconStyle) -> some View {
         switch style {
         case .number:
-            Text("82%").font(.system(size: 13, weight: .bold)).foregroundColor(pal.lvMid)
+            Circle().fill(pal.lvMid).frame(width: 10, height: 10)
         case .ring:
             ZStack {
                 Circle().stroke(pal.borderStrong, lineWidth: 2.4)
@@ -2369,16 +2869,40 @@ struct UsageView: View {
         return formatter.string(from: date)
     }
 
+    // Reset label combining the absolute time and the remaining time, e.g.
+    // "Resets at 19:20 · in 1h 10m" or "Resets on 13 Jun 2026 at 9:00 PM · in 3d 1h 20m".
+    func resetLabel(_ date: Date, includeDate: Bool) -> String {
+        let base = "Resets \(formatResetTime(date, includeDate: includeDate))"
+        if let remaining = formatTimeRemaining(date) {
+            return "\(base) · in \(remaining)"
+        }
+        return base
+    }
+
+    // Human-readable remaining time, e.g. "1h 10m" / "3d 1h 20m" / "45m".
+    // Returns nil if the date is in the past.
+    func formatTimeRemaining(_ date: Date) -> String? {
+        let total = Int(date.timeIntervalSinceNow)
+        if total <= 0 { return nil }
+        let minutes = (total / 60) % 60
+        let hours = (total / 3600) % 24
+        let days = total / 86400
+        if days > 0 {
+            return hours > 0 ? "\(days)d \(hours)h \(minutes)m" : "\(days)d \(minutes)m"
+        }
+        if hours > 0 { return "\(hours)h \(minutes)m" }
+        return "\(minutes)m"
+    }
+
     func formatResetTime(_ date: Date, includeDate: Bool = false) -> String {
         let formatter = DateFormatter()
 
         if includeDate {
-            // Format: "on 31 Jan 2026 at 7:59 AM"
-            formatter.dateFormat = "d MMM yyyy 'at' h:mm a"
+            // Format: "on 13/06 at 20:59"
+            formatter.dateFormat = "dd/MM 'at' HH:mm"
             return "on \(formatter.string(from: date))"
         } else {
-            formatter.timeStyle = .short
-            formatter.dateStyle = .none
+            formatter.dateFormat = "HH:mm"
             return "at \(formatter.string(from: date))"
         }
     }
