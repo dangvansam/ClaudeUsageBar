@@ -3,6 +3,132 @@ import AppKit
 import WebKit
 import Carbon
 
+// MARK: - Design System
+// Tokens lifted 1:1 from the Claude Design prototype (website demo.css + the Rust
+// app's popup/theme.rs) so macOS, Linux and Windows render the same surfaces.
+
+enum AppTheme: String {
+    case light, dark, system
+}
+
+enum Accent: String {
+    case warm, cool, coral, mono
+}
+
+enum TrayIconStyle: String {
+    case number, ring, mark
+}
+
+struct Palette {
+    let bgStage: Color
+    let bgCard: Color
+    let bgCardAlt: Color
+    let bgInset: Color
+    let textPrimary: Color
+    let textSecondary: Color
+    let textMuted: Color
+    let border: Color
+    let borderStrong: Color
+    let accent: Color
+    let onAccent: Color
+    let lvLow: Color
+    let lvMid: Color
+    let lvHigh: Color
+    let lvCrit: Color
+
+    // Tier thresholds match project/app.js levelKey: >=87 crit, >=70 high, >=45 mid, else low.
+    func tierColor(_ pct: Int) -> Color {
+        if pct >= 87 { return lvCrit }
+        if pct >= 70 { return lvHigh }
+        if pct >= 45 { return lvMid }
+        return lvLow
+    }
+}
+
+// Per-accent tier ramp (low, mid, high, crit) — verbatim from popup/theme.rs.
+func accentRamp(_ accent: Accent) -> (UInt32, UInt32, UInt32, UInt32) {
+    switch accent {
+    case .warm:  return (0xe0a84a, 0xe07f33, 0xd4583a, 0xc33b2c)
+    case .cool:  return (0x36c97a, 0xe0a132, 0xe0613e, 0xd23b30)
+    case .coral: return (0xcf9168, 0xcd7548, 0xbd5238, 0xa83c2a)
+    case .mono:  return (0x9aa0a6, 0x7d8389, 0x5f656b, 0x494e53)
+    }
+}
+
+func makePalette(isDark: Bool, accent: Accent) -> Palette {
+    let (low, mid, high, crit) = accentRamp(accent)
+    let accentInt = Color(hex: 0xc8603f) // single interactive accent across themes
+    if isDark {
+        return Palette(
+            bgStage: Color(hex: 0x0e0e10),
+            bgCard: Color(hex: 0x17171a),
+            bgCardAlt: Color(hex: 0x1f1f23),
+            bgInset: Color(hex: 0x121214),
+            textPrimary: Color(hex: 0xf3f2ee),
+            textSecondary: Color(hex: 0xc1beb6),
+            textMuted: Color(hex: 0x8a8780),
+            border: Color(hex: 0x2a2a2e),
+            borderStrong: Color(hex: 0x3a3a3e),
+            accent: accentInt,
+            onAccent: .white,
+            lvLow: Color(hex: low), lvMid: Color(hex: mid), lvHigh: Color(hex: high), lvCrit: Color(hex: crit)
+        )
+    }
+    return Palette(
+        bgStage: Color(hex: 0xe9e6e0),
+        bgCard: Color(hex: 0xfafaf7),
+        bgCardAlt: Color(hex: 0xf2f0ea),
+        bgInset: Color(hex: 0xeeebe3),
+        textPrimary: Color(hex: 0x1a1a1c),
+        textSecondary: Color(hex: 0x4a4740),
+        textMuted: Color(hex: 0x807c73),
+        border: Color(hex: 0xd5d0c4),
+        borderStrong: Color(hex: 0xbcb6a8),
+        accent: accentInt,
+        onAccent: .white,
+        lvLow: Color(hex: low), lvMid: Color(hex: mid), lvHigh: Color(hex: high), lvCrit: Color(hex: crit)
+    )
+}
+
+// Tray color uses the 3-tier ramp (low/mid/high) keyed by session percent, matching
+// the Rust app's icon.rs HealthTier (>=87 high, >=70 mid, else low).
+func trayTierNSColor(_ pct: Int, _ accent: Accent) -> NSColor {
+    let (low, mid, high, _) = accentRamp(accent)
+    let hex: UInt32 = pct >= 87 ? high : (pct >= 70 ? mid : low)
+    return NSColor(hex: hex)
+}
+
+extension Color {
+    init(hex: UInt32) {
+        self.init(
+            .sRGB,
+            red: Double((hex >> 16) & 0xff) / 255.0,
+            green: Double((hex >> 8) & 0xff) / 255.0,
+            blue: Double(hex & 0xff) / 255.0,
+            opacity: 1.0
+        )
+    }
+}
+
+extension NSColor {
+    convenience init(hex: UInt32) {
+        self.init(
+            srgbRed: CGFloat((hex >> 16) & 0xff) / 255.0,
+            green: CGFloat((hex >> 8) & 0xff) / 255.0,
+            blue: CGFloat(hex & 0xff) / 255.0,
+            alpha: 1.0
+        )
+    }
+}
+
+// Fill {pct}/{limit}/{reset} tokens — mirrors notify.rs render_template.
+func renderNotificationTemplate(_ template: String, pct: Int, limit: String, reset: String) -> String {
+    return template
+        .replacingOccurrences(of: "{pct}", with: "\(pct)%")
+        .replacingOccurrences(of: "{limit}", with: limit)
+        .replacingOccurrences(of: "{reset}", with: reset)
+}
+
 // Main entry point
 class AppDelegate: NSObject, NSApplicationDelegate {
     var statusItem: NSStatusItem!
@@ -233,22 +359,74 @@ class AppDelegate: NSObject, NSApplicationDelegate {
     func updateStatusIcon(percentage: Int) {
         guard let button = statusItem.button else { return }
 
-        // Determine color based on percentage
-        let color: NSColor
-        if percentage < 70 {
-            color = NSColor(red: 0.13, green: 0.77, blue: 0.37, alpha: 1.0) // Green
-        } else if percentage < 90 {
-            color = NSColor(red: 1.0, green: 0.8, blue: 0.0, alpha: 1.0) // Yellow
+        // Read appearance settings; updateStatusIcon can fire before usageManager
+        // exists (initial 0% paint), so fall back to defaults.
+        let style: TrayIconStyle
+        let accent: Accent
+        let showPct: Bool
+        if let manager = usageManager {
+            style = manager.trayIconStyle
+            accent = manager.accent
+            showPct = manager.showPercentInTray
         } else {
-            color = NSColor(red: 1.0, green: 0.23, blue: 0.19, alpha: 1.0) // Red
+            style = .mark
+            accent = .warm
+            showPct = true
         }
 
-        // Create spark icon with color
-        let sparkIcon = createSparkIcon(color: color)
+        // Color tracks the session tier (amber → red), replacing green/yellow/red.
+        let color = trayTierNSColor(percentage, accent)
 
-        // Set image and title
-        button.image = sparkIcon
-        button.title = " \(percentage)%"
+        // Number style with the percentage hidden has nothing to show → Mark.
+        let effective: TrayIconStyle = (style == .number && !showPct) ? .mark : style
+
+        switch effective {
+        case .ring:
+            button.image = createRingIcon(color: color, percentage: percentage)
+            button.title = showPct ? " \(percentage)%" : ""
+        case .mark:
+            button.image = createSparkIcon(color: color)
+            button.title = ""
+        case .number:
+            button.image = createSparkIcon(color: color)
+            button.title = " \(percentage)%"
+        }
+    }
+
+    func createRingIcon(color: NSColor, percentage: Int) -> NSImage {
+        let size = NSSize(width: 16, height: 16)
+        let image = NSImage(size: size)
+
+        image.lockFocus()
+
+        let center = NSPoint(x: 8, y: 8)
+        let radius: CGFloat = 6.0
+        let lineWidth: CGFloat = 2.2
+
+        // Faded full-circle track.
+        let track = NSBezierPath()
+        track.appendArc(withCenter: center, radius: radius, startAngle: 0, endAngle: 360)
+        track.lineWidth = lineWidth
+        color.withAlphaComponent(0.28).setStroke()
+        track.stroke()
+
+        // Progress arc, clockwise from 12 o'clock.
+        let pct = max(0, min(100, percentage))
+        if pct > 0 {
+            let arc = NSBezierPath()
+            let start: CGFloat = 90
+            let end = start - CGFloat(pct) / 100.0 * 360.0
+            arc.appendArc(withCenter: center, radius: radius, startAngle: start, endAngle: end, clockwise: true)
+            arc.lineWidth = lineWidth
+            arc.lineCapStyle = .round
+            color.setStroke()
+            arc.stroke()
+        }
+
+        image.unlockFocus()
+        image.isTemplate = false
+
+        return image
     }
 
     func createSparkIcon(color: NSColor) -> NSImage {
@@ -333,6 +511,16 @@ class UsageManager: ObservableObject {
     @Published var isAccessibilityEnabled: Bool = false
     @Published var shortcutEnabled: Bool = true
 
+    // Design-system settings (parity with the Rust app's storage.rs Settings).
+    @Published var theme: AppTheme = .system
+    @Published var accent: Accent = .warm
+    @Published var trayIconStyle: TrayIconStyle = .number
+    @Published var showPercentInTray: Bool = true
+    @Published var sessionWarnThreshold: Int = 80
+    @Published var weeklyWarnThreshold: Int = 80
+    @Published var notifMessageTemplate: String =
+        "Heads up — you've used {pct} of your {limit} limit. Resets {reset}."
+
     private var statusItem: NSStatusItem?
     private var sessionCookie: String = ""
     private weak var delegate: AppDelegate?
@@ -388,6 +576,29 @@ class UsageManager: ObservableObject {
         } else {
             shortcutEnabled = UserDefaults.standard.bool(forKey: "shortcut_enabled")
         }
+
+        // Design-system settings — keys mirror the Rust app's storage.rs field names.
+        if let raw = UserDefaults.standard.string(forKey: "theme"), let v = AppTheme(rawValue: raw) {
+            theme = v
+        }
+        if let raw = UserDefaults.standard.string(forKey: "accent"), let v = Accent(rawValue: raw) {
+            accent = v
+        }
+        if let raw = UserDefaults.standard.string(forKey: "tray_icon_style"), let v = TrayIconStyle(rawValue: raw) {
+            trayIconStyle = v
+        }
+        if UserDefaults.standard.object(forKey: "show_percent_in_tray") != nil {
+            showPercentInTray = UserDefaults.standard.bool(forKey: "show_percent_in_tray")
+        }
+        if UserDefaults.standard.object(forKey: "session_warn_threshold") != nil {
+            sessionWarnThreshold = UserDefaults.standard.integer(forKey: "session_warn_threshold")
+        }
+        if UserDefaults.standard.object(forKey: "weekly_warn_threshold") != nil {
+            weeklyWarnThreshold = UserDefaults.standard.integer(forKey: "weekly_warn_threshold")
+        }
+        if let raw = UserDefaults.standard.string(forKey: "notif_message_template"), !raw.isEmpty {
+            notifMessageTemplate = raw
+        }
     }
 
     func saveSettings() {
@@ -395,7 +606,21 @@ class UsageManager: ObservableObject {
         UserDefaults.standard.set(statusNotificationsEnabled, forKey: "status_notifications_enabled")
         UserDefaults.standard.set(openAtLogin, forKey: "open_at_login")
         UserDefaults.standard.set(shortcutEnabled, forKey: "shortcut_enabled")
+        UserDefaults.standard.set(theme.rawValue, forKey: "theme")
+        UserDefaults.standard.set(accent.rawValue, forKey: "accent")
+        UserDefaults.standard.set(trayIconStyle.rawValue, forKey: "tray_icon_style")
+        UserDefaults.standard.set(showPercentInTray, forKey: "show_percent_in_tray")
+        UserDefaults.standard.set(sessionWarnThreshold, forKey: "session_warn_threshold")
+        UserDefaults.standard.set(weeklyWarnThreshold, forKey: "weekly_warn_threshold")
+        UserDefaults.standard.set(notifMessageTemplate, forKey: "notif_message_template")
         UserDefaults.standard.synchronize()
+    }
+
+    // Re-render the menu-bar icon from current usage + appearance settings. Called
+    // after a tray-affecting setting (style/accent/show-percent) changes.
+    func refreshTray() {
+        let pct = sessionLimit > 0 ? Int((Double(sessionUsage) / Double(sessionLimit)) * 100) : 0
+        delegate?.updateStatusIcon(percentage: pct)
     }
 
     func saveSessionCookie(_ cookie: String) {
@@ -646,56 +871,50 @@ class UsageManager: ObservableObject {
     }
 
     func checkNotificationThresholds(percentage: Int) {
-        NSLog("🔔 Checking notifications: percentage=\(percentage)%, enabled=\(usageNotificationsEnabled), lastNotified=\(lastNotifiedThreshold)%")
+        guard usageNotificationsEnabled else { return }
 
-        guard usageNotificationsEnabled else {
-            NSLog("⚠️ Usage notifications disabled")
-            return
-        }
-
-        let thresholds = [25, 50, 75, 90]
-
-        for threshold in thresholds {
-            if percentage >= threshold && lastNotifiedThreshold < threshold {
-                NSLog("📬 Sending notification for \(threshold)% threshold")
-                sendNotification(percentage: percentage, threshold: threshold)
-                lastNotifiedThreshold = threshold
-                // Persist the threshold
-                UserDefaults.standard.set(lastNotifiedThreshold, forKey: "last_notified_threshold")
-                UserDefaults.standard.synchronize()
-            }
-        }
-
-        // Reset if usage drops below current threshold
-        if percentage < lastNotifiedThreshold {
-            let newThreshold = thresholds.filter { $0 <= percentage }.last ?? 0
-            NSLog("🔄 Resetting notification threshold from \(lastNotifiedThreshold)% to \(newThreshold)%")
-            lastNotifiedThreshold = newThreshold
+        // Single configurable warning threshold, matching the Rust app's notify path.
+        let threshold = sessionWarnThreshold
+        if percentage >= threshold && lastNotifiedThreshold < threshold {
+            sendUsageNotification(pct: percentage, limit: "session", reset: relativeResetText(sessionResetsAt))
+            lastNotifiedThreshold = threshold
             UserDefaults.standard.set(lastNotifiedThreshold, forKey: "last_notified_threshold")
+            UserDefaults.standard.synchronize()
+        }
+
+        // Re-arm once usage drops back below the threshold.
+        if percentage < threshold && lastNotifiedThreshold != 0 {
+            lastNotifiedThreshold = 0
+            UserDefaults.standard.set(0, forKey: "last_notified_threshold")
             UserDefaults.standard.synchronize()
         }
     }
 
-    func sendNotification(percentage: Int, threshold: Int) {
+    func sendUsageNotification(pct: Int, limit: String, reset: String) {
+        let body = renderNotificationTemplate(notifMessageTemplate, pct: pct, limit: limit, reset: reset)
         let notification = NSUserNotification()
         notification.title = "Claude Usage Alert"
-        notification.informativeText = "You've reached \(percentage)% of your 5-hour session limit"
+        notification.informativeText = body
         notification.soundName = NSUserNotificationDefaultSoundName
-
         NSUserNotificationCenter.default.deliver(notification)
-        NSLog("📬 Sent notification for \(threshold)% threshold")
     }
 
     func sendTestNotification() {
-        NSLog("🔔 Test notification button clicked")
+        sendUsageNotification(
+            pct: sessionWarnThreshold,
+            limit: "session",
+            reset: relativeResetText(sessionResetsAt)
+        )
+    }
 
-        let notification = NSUserNotification()
-        notification.title = "Claude Usage Alert"
-        notification.informativeText = "Test notification - You've reached 75% of your 5-hour session limit"
-        notification.soundName = NSUserNotificationDefaultSoundName
-
-        NSUserNotificationCenter.default.deliver(notification)
-        NSLog("📬 Test notification sent successfully")
+    func relativeResetText(_ date: Date?) -> String {
+        guard let date = date else { return "soon" }
+        let secs = Int(date.timeIntervalSinceNow)
+        if secs <= 0 { return "now" }
+        let mins = secs / 60
+        let hours = mins / 60
+        if hours >= 1 { return "in \(hours)h \(mins % 60)m" }
+        return "in \(mins)m"
     }
 
     @Published var sessionPercentage: Double = 0.0
@@ -1201,48 +1420,59 @@ struct UsageView: View {
     @State private var showingCookieInput: Bool = false
     @State private var showingSettings: Bool = false
     @State private var showingStatusDetails: Bool = false
+    @State private var settingsPage: SettingsTab = .general
     @State private var measuredHeight: CGFloat = 250
 
     private let maxPopupHeight: CGFloat = 600
 
+    // Resolve the active palette from the user's theme + accent each render.
+    var pal: Palette {
+        let isDark: Bool
+        switch usageManager.theme {
+        case .light: isDark = false
+        case .dark: isDark = true
+        case .system:
+            isDark = NSApp.effectiveAppearance.bestMatch(from: [.aqua, .darkAqua]) == .darkAqua
+        }
+        return makePalette(isDark: isDark, accent: usageManager.accent)
+    }
+
     var body: some View {
-        ScrollViewReader { proxy in
-            ScrollView {
-                content
-                    .padding()
-                    .background(
-                        GeometryReader { geo in
-                            Color.clear.preference(key: ContentHeightKey.self, value: geo.size.height)
-                        }
-                    )
-            }
-            .frame(width: 360, height: min(max(measuredHeight, 100), maxPopupHeight))
-            .onPreferenceChange(ContentHeightKey.self) { value in
-                guard value > 0 else { return }
-                measuredHeight = value
-            }
-            .onAppear {
-                if let savedCookie = UserDefaults.standard.string(forKey: "claude_session_cookie") {
-                    sessionCookieInput = String(savedCookie.prefix(20)) + "..."
-                }
-                usageManager.updatePercentages()
-            }
-            .onChange(of: showingSettings) { isOpen in
-                if isOpen {
-                    DispatchQueue.main.asyncAfter(deadline: .now() + 0.3) {
-                        withAnimation(.easeInOut(duration: 0.35)) {
-                            proxy.scrollTo("settings-anchor", anchor: .bottom)
-                        }
-                    }
+        ScrollView {
+            Group {
+                if showingSettings {
+                    settingsScene
+                } else {
+                    content
                 }
             }
+            .padding(showingSettings ? 0 : 16)
+            .background(
+                GeometryReader { geo in
+                    Color.clear.preference(key: ContentHeightKey.self, value: geo.size.height)
+                }
+            )
+        }
+        .frame(width: showingSettings ? 470 : 360, height: min(max(measuredHeight, 100), maxPopupHeight))
+        .background(pal.bgStage)
+        .onPreferenceChange(ContentHeightKey.self) { value in
+            guard value > 0 else { return }
+            measuredHeight = value
+        }
+        .onAppear {
+            if let savedCookie = UserDefaults.standard.string(forKey: "claude_session_cookie") {
+                sessionCookieInput = String(savedCookie.prefix(20)) + "..."
+            }
+            usageManager.updatePercentages()
         }
     }
 
     var content: some View {
         VStack(alignment: .leading, spacing: 16) {
             Text("Claude Usage")
-                .font(.headline)
+                .font(.system(size: 16, weight: .bold))
+                .foregroundColor(pal.textPrimary)
+                .frame(maxWidth: .infinity, alignment: .center)
                 .padding(.bottom, 4)
 
             // App update / announcement banner
@@ -1276,14 +1506,14 @@ struct UsageView: View {
                     }
                 }
                 .padding(8)
-                .background(Color.accentColor.opacity(0.12))
+                .background(pal.accent.opacity(0.12))
                 .cornerRadius(6)
             }
 
             if let error = usageManager.errorMessage {
                 Text(error)
                     .font(.caption)
-                    .foregroundColor(.orange)
+                    .foregroundColor(pal.lvHigh)
                     .padding(.bottom, 8)
             }
 
@@ -1291,75 +1521,31 @@ struct UsageView: View {
             if !usageManager.hasFetchedData {
                 Text("👋 Welcome! Set your session cookie below to get started.")
                     .font(.subheadline)
-                    .foregroundColor(.secondary)
+                    .foregroundColor(pal.textSecondary)
                     .padding(.vertical, 8)
             }
 
-            // Session Usage
+            // Usage meters (custom rounded tracks, tier-colored amber → red)
             if usageManager.hasFetchedData {
-            VStack(alignment: .leading, spacing: 4) {
-                HStack {
-                    Text("Session (5 hour)")
-                        .font(.subheadline)
-                    Spacer()
-                    if let resetTime = usageManager.sessionResetsAt {
-                        Text("Resets \(formatResetTime(resetTime))")
-                            .font(.caption)
-                            .foregroundColor(.secondary)
-                    }
+                meterRow(
+                    name: "Session (5 hour)",
+                    pct: Int(usageManager.sessionPercentage * 100),
+                    reset: usageManager.sessionResetsAt.map { "Resets \(formatResetTime($0))" }
+                )
+
+                meterRow(
+                    name: "Weekly (7 day)",
+                    pct: Int(usageManager.weeklyPercentage * 100),
+                    reset: usageManager.weeklyResetsAt.map { "Resets \(formatResetTime($0, includeDate: true))" }
+                )
+
+                if usageManager.hasWeeklySonnet {
+                    meterRow(
+                        name: "Weekly Sonnet (7 day)",
+                        pct: Int(usageManager.weeklySonnetPercentage * 100),
+                        reset: usageManager.weeklySonnetResetsAt.map { "Resets \(formatResetTime($0, includeDate: true))" }
+                    )
                 }
-
-                ProgressView(value: usageManager.sessionPercentage)
-                    .tint(colorForPercentage(usageManager.sessionPercentage))
-
-                Text("\(Int(usageManager.sessionPercentage * 100))% used")
-                    .font(.caption)
-                    .foregroundColor(.secondary)
-            }
-
-            // Weekly Usage
-            VStack(alignment: .leading, spacing: 4) {
-                HStack {
-                    Text("Weekly (7 day)")
-                        .font(.subheadline)
-                    Spacer()
-                    if let resetTime = usageManager.weeklyResetsAt {
-                        Text("Resets \(formatResetTime(resetTime, includeDate: true))")
-                            .font(.caption)
-                            .foregroundColor(.secondary)
-                    }
-                }
-
-                ProgressView(value: usageManager.weeklyPercentage)
-                    .tint(colorForPercentage(usageManager.weeklyPercentage))
-
-                Text("\(Int(usageManager.weeklyPercentage * 100))% used")
-                    .font(.caption)
-                    .foregroundColor(.secondary)
-            }
-
-            // Weekly Sonnet Usage (only show if available)
-            if usageManager.hasWeeklySonnet && usageManager.hasFetchedData {
-                VStack(alignment: .leading, spacing: 4) {
-                    HStack {
-                        Text("Weekly Sonnet (7 day)")
-                            .font(.subheadline)
-                        Spacer()
-                        if let resetTime = usageManager.weeklySonnetResetsAt {
-                            Text("Resets \(formatResetTime(resetTime, includeDate: true))")
-                                .font(.caption)
-                                .foregroundColor(.secondary)
-                        }
-                    }
-
-                    ProgressView(value: usageManager.weeklySonnetPercentage)
-                        .tint(colorForPercentage(usageManager.weeklySonnetPercentage))
-
-                    Text("\(Int(usageManager.weeklySonnetPercentage * 100))% used")
-                        .font(.caption)
-                        .foregroundColor(.secondary)
-                }
-            }
             }
 
             if statusManager.hasFetched {
@@ -1454,7 +1640,7 @@ struct UsageView: View {
                                     ForEach(filteredAffected) { c in
                                         HStack(spacing: 6) {
                                             Circle()
-                                                .fill(Color.orange)
+                                                .fill(pal.lvMid)
                                                 .frame(width: 5, height: 5)
                                             Text(c.name).font(.caption2)
                                             Spacer()
@@ -1485,7 +1671,7 @@ struct UsageView: View {
                             }
                         }
                         .padding(10)
-                        .background(Color.orange.opacity(0.10))
+                        .background(pal.lvMid.opacity(0.12))
                         .cornerRadius(6)
                     }
                 }
@@ -1497,7 +1683,7 @@ struct UsageView: View {
             HStack {
                 Text("Last updated: \(formatTime(usageManager.lastUpdated))")
                     .font(.caption)
-                    .foregroundColor(.secondary)
+                    .foregroundColor(pal.textMuted)
                 Spacer()
                 Button("Refresh") {
                     usageManager.fetchUsage()
@@ -1505,7 +1691,8 @@ struct UsageView: View {
                     updateManager.fetch()
                 }
                 .buttonStyle(.borderless)
-                .font(.caption)
+                .font(.system(size: 13, weight: .medium))
+                .foregroundColor(pal.accent)
             }
             }
 
@@ -1527,7 +1714,7 @@ struct UsageView: View {
                         }) {
                             Text("View tutorial →")
                                 .font(.caption2)
-                                .foregroundColor(.blue)
+                                .foregroundColor(pal.accent)
                         }
                         .buttonStyle(.borderless)
                     }
@@ -1583,160 +1770,591 @@ struct UsageView: View {
                 .cornerRadius(6)
             }
 
-            // Support Section
-            Button(action: {
-                NSWorkspace.shared.open(URL(string: "https://donate.stripe.com/3cIcN5b5H7Q8ay8bIDfIs02")!)
-            }) {
-                HStack(spacing: 4) {
-                    Text("☕")
-                    Text("Buy Dev a Coffee")
+            // Support + Settings footer
+            HStack(spacing: 14) {
+                Button(action: {
+                    NSWorkspace.shared.open(URL(string: "https://donate.stripe.com/3cIcN5b5H7Q8ay8bIDfIs02")!)
+                }) {
+                    HStack(spacing: 4) {
+                        Text("☕")
+                        Text("Buy Dev a Coffee")
+                    }
                 }
-            }
-            .buttonStyle(.borderless)
-            .font(.caption)
-            .foregroundColor(.orange)
+                .buttonStyle(.borderless)
+                .font(.caption)
+                .foregroundColor(pal.accent)
 
-            // Settings Section
-            Button(showingSettings ? "Hide Settings" : "Settings") {
-                showingSettings.toggle()
-            }
-            .buttonStyle(.borderless)
-            .font(.caption)
+                Spacer()
 
-            if showingSettings {
-                VStack(alignment: .leading, spacing: 12) {
-                    Toggle(isOn: Binding(
-                        get: { usageManager.openAtLogin },
-                        set: { newValue in
-                            usageManager.openAtLogin = newValue
-                            usageManager.saveSettings()
-                        }
-                    )) {
-                        VStack(alignment: .leading, spacing: 2) {
-                            Text("Open at Login")
-                                .font(.caption)
-                            Text("Launch app automatically when you log in")
-                                .font(.caption2)
-                                .foregroundColor(.secondary)
-                        }
+                Button(action: { showingSettings = true }) {
+                    HStack(spacing: 6) {
+                        Image(systemName: "gearshape")
+                        Text("Settings")
                     }
-                    .toggleStyle(.checkbox)
-
-                    VStack(alignment: .leading, spacing: 8) {
-                        Toggle(isOn: Binding(
-                            get: { usageManager.usageNotificationsEnabled },
-                            set: { newValue in
-                                usageManager.usageNotificationsEnabled = newValue
-                                usageManager.saveSettings()
-                            }
-                        )) {
-                            VStack(alignment: .leading, spacing: 2) {
-                                Text("Enable Usage Notifications")
-                                    .font(.caption)
-                                Text("Get alerts at 25%, 50%, 75%,\nand 90% session usage")
-                                    .font(.caption2)
-                                    .foregroundColor(.secondary)
-                                    .fixedSize(horizontal: false, vertical: true)
-                            }
-                        }
-                        .toggleStyle(.checkbox)
-
-                        Toggle(isOn: Binding(
-                            get: { usageManager.statusNotificationsEnabled },
-                            set: { newValue in
-                                usageManager.statusNotificationsEnabled = newValue
-                                usageManager.saveSettings()
-                            }
-                        )) {
-                            VStack(alignment: .leading, spacing: 2) {
-                                Text("Enable Status Notifications")
-                                    .font(.caption)
-                                Text("Get alerts when tracked Claude services have an outage")
-                                    .font(.caption2)
-                                    .foregroundColor(.secondary)
-                                    .fixedSize(horizontal: false, vertical: true)
-                            }
-                        }
-                        .toggleStyle(.checkbox)
-
-                        Button("Test Notification") {
-                            usageManager.sendTestNotification()
-                        }
-                        .buttonStyle(.bordered)
-                        .controlSize(.small)
-                    }
-
-                    Divider()
-
-                    VStack(alignment: .leading, spacing: 8) {
-                        Toggle(isOn: Binding(
-                            get: { usageManager.shortcutEnabled },
-                            set: { newValue in
-                                usageManager.shortcutEnabled = newValue
-                                usageManager.saveSettings()
-                                if let appDelegate = NSApplication.shared.delegate as? AppDelegate {
-                                    appDelegate.setShortcutEnabled(newValue)
-                                }
-                            }
-                        )) {
-                            VStack(alignment: .leading, spacing: 2) {
-                                Text("Keyboard Shortcut (⌘U)")
-                                    .font(.caption)
-                                Text("Toggle popup from anywhere.\nDisable if it conflicts with other apps.")
-                                    .font(.caption2)
-                                    .foregroundColor(.secondary)
-                                    .fixedSize(horizontal: false, vertical: true)
-                            }
-                        }
-                        .toggleStyle(.switch)
-
-                        if usageManager.shortcutEnabled && !usageManager.isAccessibilityEnabled {
-                            Button("Grant Accessibility Permission") {
-                                NSWorkspace.shared.open(URL(string: "x-apple.systempreferences:com.apple.preference.security?Privacy_Accessibility")!)
-                            }
-                            .buttonStyle(.borderedProminent)
-                            .controlSize(.small)
-
-                            Text("Accessibility permission may be needed\nfor the shortcut to work in all apps")
-                                .font(.caption2)
-                                .foregroundColor(.secondary)
-                                .fixedSize(horizontal: false, vertical: true)
-                        }
-                    }
-
-                    Divider()
-
-                    VStack(alignment: .leading, spacing: 6) {
-                        Text("Status alerts: services to track")
-                            .font(.caption)
-                            .fontWeight(.semibold)
-                        Text("Only tick the Claude services you use. Status issues with unticked services won't be shown or trigger alerts.")
-                            .font(.caption2)
-                            .foregroundColor(.secondary)
-                            .fixedSize(horizontal: false, vertical: true)
-                        ForEach(statusManager.allComponents) { component in
-                            Toggle(isOn: Binding(
-                                get: { statusManager.isTracked(component.id) },
-                                set: { _ in statusManager.toggleComponent(component.id) }
-                            )) {
-                                Text(component.name)
-                                    .font(.caption2)
-                            }
-                            .toggleStyle(.checkbox)
-                        }
-                    }
-
                 }
-                .padding(8)
-                .background(Color.secondary.opacity(0.1))
-                .cornerRadius(6)
-
-                // Anchor for scroll-to-bottom when Settings opens
-                Color.clear
-                    .frame(height: 1)
-                    .id("settings-anchor")
+                .buttonStyle(.borderless)
+                .font(.system(size: 13, weight: .medium))
+                .foregroundColor(pal.textSecondary)
             }
         }
+    }
+
+    // MARK: - Usage meter
+
+    func meterRow(name: String, pct: Int, reset: String?) -> some View {
+        let p = max(0, min(100, pct))
+        return VStack(alignment: .leading, spacing: 8) {
+            HStack {
+                Text(name)
+                    .font(.system(size: 14, weight: .semibold))
+                    .foregroundColor(pal.textPrimary)
+                Spacer()
+                if let reset = reset {
+                    Text(reset)
+                        .font(.system(size: 12))
+                        .foregroundColor(pal.textMuted)
+                }
+            }
+            GeometryReader { geo in
+                ZStack(alignment: .leading) {
+                    RoundedRectangle(cornerRadius: 4).fill(pal.bgInset)
+                    RoundedRectangle(cornerRadius: 4)
+                        .fill(pal.tierColor(p))
+                        .frame(width: max(0, geo.size.width * CGFloat(p) / 100.0))
+                }
+            }
+            .frame(height: 8)
+            Text("\(p)% used")
+                .font(.system(size: 12, weight: .semibold))
+                .foregroundColor(pal.tierColor(p))
+        }
+    }
+
+    // MARK: - Settings scene (sidebar + 5 pages, mirroring the Rust app IA)
+
+    enum SettingsTab {
+        case general, appearance, notifications, account, about
+
+        var title: String {
+            switch self {
+            case .general: return "General"
+            case .appearance: return "Tray & Appearance"
+            case .notifications: return "Notifications"
+            case .account: return "Account"
+            case .about: return "About"
+            }
+        }
+        // Tile colors copied from project/app.js PAGEMETA.
+        var tileColor: Color {
+            switch self {
+            case .general: return Color(hex: 0x5a6b7a)
+            case .appearance: return Color(hex: 0xc8603f)
+            case .notifications: return Color(hex: 0xe0823a)
+            case .account: return Color(hex: 0x8a6db0)
+            case .about: return Color(hex: 0x7d8389)
+            }
+        }
+        var sfSymbol: String {
+            switch self {
+            case .general: return "gearshape"
+            case .appearance: return "paintpalette"
+            case .notifications: return "bell"
+            case .account: return "person"
+            case .about: return "info.circle"
+            }
+        }
+    }
+
+    var settingsScene: some View {
+        VStack(spacing: 0) {
+            HStack {
+                Button(action: { showingSettings = false }) {
+                    HStack(spacing: 5) {
+                        Image(systemName: "chevron.left")
+                        Text("Done")
+                    }
+                }
+                .buttonStyle(.plain)
+                .font(.system(size: 13, weight: .medium))
+                .foregroundColor(pal.accent)
+                Spacer()
+                Text("Settings")
+                    .font(.system(size: 14, weight: .semibold))
+                    .foregroundColor(pal.textPrimary)
+            }
+            .padding(.horizontal, 14)
+            .padding(.vertical, 10)
+
+            Divider()
+
+            HStack(alignment: .top, spacing: 0) {
+                settingsSidebar
+                VStack(alignment: .leading, spacing: 0) {
+                    pageHeader
+                    settingsPageView
+                        .padding(.horizontal, 16)
+                        .padding(.vertical, 12)
+                }
+                .frame(maxWidth: .infinity, alignment: .topLeading)
+            }
+        }
+    }
+
+    var settingsSidebar: some View {
+        VStack(alignment: .leading, spacing: 2) {
+            groupLabel("General")
+            navItem(.general)
+            groupLabel("Appearance")
+            navItem(.appearance)
+            navItem(.notifications)
+            groupLabel("Account")
+            navItem(.account)
+            navItem(.about)
+        }
+        .padding(10)
+        .frame(width: 150, alignment: .topLeading)
+        .background(pal.bgInset)
+        .overlay(Rectangle().frame(width: 1).foregroundColor(pal.border), alignment: .trailing)
+    }
+
+    func navItem(_ tab: SettingsTab) -> some View {
+        let active = settingsPage == tab
+        return Button(action: { settingsPage = tab }) {
+            HStack(spacing: 10) {
+                ZStack {
+                    RoundedRectangle(cornerRadius: 6)
+                        .fill(active ? Color.white.opacity(0.22) : tab.tileColor)
+                        .frame(width: 22, height: 22)
+                    Image(systemName: tab.sfSymbol)
+                        .font(.system(size: 11, weight: .semibold))
+                        .foregroundColor(.white)
+                }
+                Text(tab.title)
+                    .font(.system(size: 13, weight: .medium))
+                    .foregroundColor(active ? pal.onAccent : pal.textPrimary)
+                    .lineLimit(1)
+                Spacer(minLength: 0)
+            }
+            .padding(.horizontal, 8)
+            .padding(.vertical, 7)
+            .background(RoundedRectangle(cornerRadius: 7).fill(active ? pal.accent : Color.clear))
+            .contentShape(Rectangle())
+        }
+        .buttonStyle(.plain)
+    }
+
+    var pageHeader: some View {
+        VStack(spacing: 0) {
+            HStack(spacing: 10) {
+                ZStack {
+                    RoundedRectangle(cornerRadius: 7)
+                        .fill(settingsPage.tileColor)
+                        .frame(width: 26, height: 26)
+                    Image(systemName: settingsPage.sfSymbol)
+                        .font(.system(size: 13, weight: .semibold))
+                        .foregroundColor(.white)
+                }
+                Text(settingsPage.title)
+                    .font(.system(size: 16, weight: .bold))
+                    .foregroundColor(pal.textPrimary)
+                Spacer()
+            }
+            .padding(.horizontal, 16)
+            .padding(.vertical, 12)
+            Divider()
+        }
+    }
+
+    @ViewBuilder
+    var settingsPageView: some View {
+        switch settingsPage {
+        case .general: generalPage
+        case .appearance: appearancePage
+        case .notifications: notificationsPage
+        case .account: accountPage
+        case .about: aboutPage
+        }
+    }
+
+    var generalPage: some View {
+        VStack(alignment: .leading, spacing: 8) {
+            groupLabel("Startup")
+            settingRow("Launch at login", "Open Usage Bar automatically when you sign in") {
+                toggleSwitch(usageManager.openAtLogin) { v in
+                    usageManager.openAtLogin = v
+                    usageManager.saveSettings()
+                }
+            }
+            groupLabel("Appearance")
+            settingRow("Theme", "Match your system or pick a side") {
+                segmentedControl(
+                    [("light", "Light"), ("dark", "Dark"), ("system", "System")],
+                    selected: usageManager.theme.rawValue
+                ) { v in
+                    usageManager.theme = AppTheme(rawValue: v) ?? .system
+                    usageManager.saveSettings()
+                    usageManager.refreshTray()
+                }
+            }
+            groupLabel("Input")
+            settingRow("Global hotkey (⌘U)", "Toggle the popover from anywhere") {
+                toggleSwitch(usageManager.shortcutEnabled) { v in
+                    usageManager.shortcutEnabled = v
+                    usageManager.saveSettings()
+                    (NSApplication.shared.delegate as? AppDelegate)?.setShortcutEnabled(v)
+                }
+            }
+            if usageManager.shortcutEnabled && !usageManager.isAccessibilityEnabled {
+                pillButton("Grant Accessibility Permission", primary: true) {
+                    NSWorkspace.shared.open(URL(string: "x-apple.systempreferences:com.apple.preference.security?Privacy_Accessibility")!)
+                }
+            }
+        }
+    }
+
+    var appearancePage: some View {
+        VStack(alignment: .leading, spacing: 8) {
+            groupLabel("Tray icon")
+            settingRow("Show percentage in tray", "Display the busiest limit as a number") {
+                toggleSwitch(usageManager.showPercentInTray) { v in
+                    usageManager.showPercentInTray = v
+                    usageManager.saveSettings()
+                    usageManager.refreshTray()
+                }
+            }
+            groupLabel("Icon style")
+            HStack(spacing: 8) {
+                iconStyleCard(.number, "Number")
+                iconStyleCard(.ring, "Ring")
+                iconStyleCard(.mark, "Mark")
+            }
+            groupLabel("Accent palette")
+            HStack(spacing: 10) {
+                accentSwatch(.warm, Color(hex: 0xe0a84a), Color(hex: 0xd4583a))
+                accentSwatch(.cool, Color(hex: 0x36c97a), Color(hex: 0xe0613e))
+                accentSwatch(.coral, Color(hex: 0xcf9168), Color(hex: 0xbd5238))
+                accentSwatch(.mono, Color(hex: 0x9aa0a6), Color(hex: 0x5f656b))
+                Spacer()
+            }
+            Text("Bars shade from amber → red as a limit fills. The palette sets the family.")
+                .font(.system(size: 12))
+                .foregroundColor(pal.textMuted)
+                .fixedSize(horizontal: false, vertical: true)
+        }
+    }
+
+    var notificationsPage: some View {
+        VStack(alignment: .leading, spacing: 8) {
+            groupLabel("Alerts")
+            settingRow("Enable notifications", "Warn you before you hit a limit") {
+                toggleSwitch(usageManager.usageNotificationsEnabled) { v in
+                    usageManager.usageNotificationsEnabled = v
+                    usageManager.saveSettings()
+                }
+            }
+            settingRow("Service status notifications", "Ping when Claude status changes") {
+                toggleSwitch(usageManager.statusNotificationsEnabled) { v in
+                    usageManager.statusNotificationsEnabled = v
+                    usageManager.saveSettings()
+                }
+            }
+            settingRow("Session warning at", "Notify when your 5-hour limit reaches") {
+                segmentedControl(
+                    [("75", "75%"), ("85", "85%"), ("95", "95%")],
+                    selected: "\(usageManager.sessionWarnThreshold)"
+                ) { v in
+                    usageManager.sessionWarnThreshold = Int(v) ?? 85
+                    usageManager.saveSettings()
+                }
+            }
+            settingRow("Weekly warning at", "Notify when your 7-day limit reaches") {
+                segmentedControl(
+                    [("80", "80%"), ("90", "90%"), ("95", "95%")],
+                    selected: "\(usageManager.weeklyWarnThreshold)"
+                ) { v in
+                    usageManager.weeklyWarnThreshold = Int(v) ?? 90
+                    usageManager.saveSettings()
+                }
+            }
+            groupLabel("Custom message")
+            VStack(alignment: .leading, spacing: 6) {
+                HStack(spacing: 6) {
+                    Text("Tokens:").font(.system(size: 11)).foregroundColor(pal.textMuted)
+                    kbd("{pct}")
+                    kbd("{limit}")
+                    kbd("{reset}")
+                }
+                TextEditor(text: Binding(
+                    get: { usageManager.notifMessageTemplate },
+                    set: { newValue in
+                        usageManager.notifMessageTemplate = String(newValue.prefix(160))
+                        usageManager.saveSettings()
+                    }
+                ))
+                .font(.system(size: 13))
+                .foregroundColor(pal.textPrimary)
+                .frame(height: 64)
+                .padding(6)
+                .background(RoundedRectangle(cornerRadius: 10).fill(pal.bgInset))
+                .overlay(RoundedRectangle(cornerRadius: 10).stroke(pal.border, lineWidth: 1))
+                Text("\(usageManager.notifMessageTemplate.count)/160")
+                    .font(.system(size: 11))
+                    .foregroundColor(pal.textMuted)
+                    .frame(maxWidth: .infinity, alignment: .trailing)
+            }
+            pillButton("Preview notification", primary: true) {
+                usageManager.sendTestNotification()
+            }
+            groupLabel("Status alerts: services to track")
+            ForEach(statusManager.allComponents) { component in
+                settingRow(component.name, nil) {
+                    toggleSwitch(statusManager.isTracked(component.id)) { _ in
+                        statusManager.toggleComponent(component.id)
+                    }
+                }
+            }
+        }
+    }
+
+    var accountPage: some View {
+        VStack(alignment: .leading, spacing: 8) {
+            if usageManager.hasFetchedData {
+                groupLabel("Signed in")
+                HStack(spacing: 12) {
+                    ZStack {
+                        RoundedRectangle(cornerRadius: 10).fill(pal.accent).frame(width: 36, height: 36)
+                        Image(systemName: "sparkle").foregroundColor(.white)
+                    }
+                    VStack(alignment: .leading, spacing: 2) {
+                        Text("Connected to claude.ai")
+                            .font(.system(size: 14, weight: .semibold))
+                            .foregroundColor(pal.textPrimary)
+                        Text("Session cookie stored on this Mac.")
+                            .font(.system(size: 12))
+                            .foregroundColor(pal.textMuted)
+                    }
+                    Spacer()
+                }
+                .padding(14)
+                .background(RoundedRectangle(cornerRadius: 12).fill(pal.bgCard))
+                .overlay(RoundedRectangle(cornerRadius: 12).stroke(pal.border, lineWidth: 1))
+            } else {
+                groupLabel("Account")
+                Text("Not signed in — paste your claude.ai cookie below.")
+                    .font(.system(size: 13))
+                    .foregroundColor(pal.textSecondary)
+            }
+            groupLabel("Session cookie")
+            PasteableTextField(text: $sessionCookieInput, placeholder: "Paste full Cookie header here…")
+                .frame(height: 60)
+                .padding(6)
+                .background(RoundedRectangle(cornerRadius: 10).fill(pal.bgInset))
+                .overlay(RoundedRectangle(cornerRadius: 10).stroke(pal.border, lineWidth: 1))
+            Text("How: claude.ai → DevTools (F12) → Network tab → open any /api/organizations/* request → copy the entire Cookie header.")
+                .font(.system(size: 12))
+                .foregroundColor(pal.textMuted)
+                .fixedSize(horizontal: false, vertical: true)
+            HStack(spacing: 8) {
+                pillButton("Save cookie", primary: true) {
+                    if !sessionCookieInput.isEmpty {
+                        usageManager.saveSessionCookie(sessionCookieInput)
+                        usageManager.fetchUsage()
+                    }
+                }
+                pillButton("Open claude.ai", primary: false) {
+                    NSWorkspace.shared.open(URL(string: "https://claude.ai")!)
+                }
+                Spacer()
+                if usageManager.hasFetchedData {
+                    pillButton("Sign out", primary: false) {
+                        sessionCookieInput = ""
+                        usageManager.clearSessionCookie()
+                    }
+                }
+            }
+        }
+    }
+
+    var aboutPage: some View {
+        VStack(alignment: .leading, spacing: 8) {
+            HStack(spacing: 12) {
+                ZStack {
+                    RoundedRectangle(cornerRadius: 11).fill(pal.accent).frame(width: 44, height: 44)
+                    Image(systemName: "sparkle").font(.system(size: 20)).foregroundColor(.white)
+                }
+                VStack(alignment: .leading, spacing: 2) {
+                    Text("Claude Usage Bar")
+                        .font(.system(size: 15, weight: .bold))
+                        .foregroundColor(pal.textPrimary)
+                    Text("ClaudeUsageBar for macOS")
+                        .font(.system(size: 12))
+                        .foregroundColor(pal.textMuted)
+                }
+                Spacer()
+            }
+            .padding(.vertical, 4)
+            groupLabel("App")
+            settingRow("Website", nil) {
+                pillButton("Visit", primary: false) {
+                    NSWorkspace.shared.open(URL(string: "https://claudeusagebar.com")!)
+                }
+            }
+            settingRow("Source code", nil) {
+                pillButton("GitHub", primary: false) {
+                    NSWorkspace.shared.open(URL(string: "https://github.com/Artzainnn/ClaudeUsageBar")!)
+                }
+            }
+            groupLabel("License")
+            Text("MIT. Made for macOS, Windows & Linux. Not affiliated with Anthropic.")
+                .font(.system(size: 12))
+                .foregroundColor(pal.textMuted)
+                .fixedSize(horizontal: false, vertical: true)
+        }
+    }
+
+    // MARK: - Settings components
+
+    func groupLabel(_ text: String) -> some View {
+        Text(text.uppercased())
+            .font(.system(size: 11, weight: .semibold))
+            .foregroundColor(pal.textMuted)
+            .padding(.top, 10)
+            .padding(.bottom, 2)
+    }
+
+    func settingRow<Trailing: View>(
+        _ title: String,
+        _ subtitle: String?,
+        @ViewBuilder trailing: () -> Trailing
+    ) -> some View {
+        HStack(alignment: .center, spacing: 12) {
+            VStack(alignment: .leading, spacing: 2) {
+                Text(title)
+                    .font(.system(size: 14, weight: .medium))
+                    .foregroundColor(pal.textPrimary)
+                if let subtitle = subtitle {
+                    Text(subtitle)
+                        .font(.system(size: 12))
+                        .foregroundColor(pal.textMuted)
+                        .fixedSize(horizontal: false, vertical: true)
+                }
+            }
+            Spacer()
+            trailing()
+        }
+        .padding(.horizontal, 14)
+        .padding(.vertical, 11)
+        .background(RoundedRectangle(cornerRadius: 12).fill(pal.bgCard))
+        .overlay(RoundedRectangle(cornerRadius: 12).stroke(pal.border, lineWidth: 1))
+    }
+
+    func toggleSwitch(_ value: Bool, _ onChange: @escaping (Bool) -> Void) -> some View {
+        Toggle("", isOn: Binding(get: { value }, set: { onChange($0) }))
+            .labelsHidden()
+            .toggleStyle(.switch)
+            .tint(pal.accent)
+    }
+
+    func segmentedControl(
+        _ options: [(String, String)],
+        selected: String,
+        onPick: @escaping (String) -> Void
+    ) -> some View {
+        HStack(spacing: 2) {
+            ForEach(options, id: \.0) { opt in
+                let active = opt.0 == selected
+                Text(opt.1)
+                    .font(.system(size: 12, weight: .medium))
+                    .foregroundColor(active ? pal.onAccent : pal.textSecondary)
+                    .padding(.horizontal, 10)
+                    .padding(.vertical, 4)
+                    .background(RoundedRectangle(cornerRadius: 6).fill(active ? pal.accent : Color.clear))
+                    .contentShape(Rectangle())
+                    .onTapGesture { onPick(opt.0) }
+            }
+        }
+        .padding(3)
+        .background(RoundedRectangle(cornerRadius: 8).fill(pal.bgInset))
+    }
+
+    func iconStyleCard(_ style: TrayIconStyle, _ label: String) -> some View {
+        let selected = usageManager.trayIconStyle == style
+        return VStack(spacing: 8) {
+            iconStylePreview(style).frame(height: 26)
+            Text(label)
+                .font(.system(size: 12, weight: .medium))
+                .foregroundColor(pal.textPrimary)
+        }
+        .frame(maxWidth: .infinity)
+        .padding(.vertical, 12)
+        .background(RoundedRectangle(cornerRadius: 10).fill(selected ? pal.bgInset : pal.bgCard))
+        .overlay(RoundedRectangle(cornerRadius: 10).stroke(selected ? pal.accent : pal.border, lineWidth: selected ? 1.5 : 1))
+        .contentShape(Rectangle())
+        .onTapGesture {
+            usageManager.trayIconStyle = style
+            usageManager.saveSettings()
+            usageManager.refreshTray()
+        }
+    }
+
+    @ViewBuilder
+    func iconStylePreview(_ style: TrayIconStyle) -> some View {
+        switch style {
+        case .number:
+            Text("82%").font(.system(size: 13, weight: .bold)).foregroundColor(pal.lvMid)
+        case .ring:
+            ZStack {
+                Circle().stroke(pal.borderStrong, lineWidth: 2.4)
+                Circle()
+                    .trim(from: 0, to: 0.75)
+                    .stroke(pal.lvMid, style: StrokeStyle(lineWidth: 2.4, lineCap: .round))
+                    .rotationEffect(.degrees(-90))
+            }
+            .frame(width: 22, height: 22)
+        case .mark:
+            Image(systemName: "sparkle").font(.system(size: 18)).foregroundColor(pal.lvMid)
+        }
+    }
+
+    func accentSwatch(_ acc: Accent, _ c1: Color, _ c2: Color) -> some View {
+        let selected = usageManager.accent == acc
+        return RoundedRectangle(cornerRadius: 8)
+            .fill(LinearGradient(
+                stops: [.init(color: c1, location: 0.5), .init(color: c2, location: 0.5)],
+                startPoint: .topLeading,
+                endPoint: .bottomTrailing
+            ))
+            .frame(width: 30, height: 30)
+            .overlay(RoundedRectangle(cornerRadius: 8).stroke(selected ? pal.accent : pal.border, lineWidth: selected ? 2 : 1))
+            .contentShape(Rectangle())
+            .onTapGesture {
+                usageManager.accent = acc
+                usageManager.saveSettings()
+                usageManager.refreshTray()
+            }
+    }
+
+    func kbd(_ text: String) -> some View {
+        Text(text)
+            .font(.system(size: 11, design: .monospaced))
+            .foregroundColor(pal.textSecondary)
+            .padding(.horizontal, 5)
+            .padding(.vertical, 1)
+            .background(RoundedRectangle(cornerRadius: 4).fill(pal.bgCardAlt))
+            .overlay(RoundedRectangle(cornerRadius: 4).stroke(pal.border, lineWidth: 1))
+    }
+
+    func pillButton(_ label: String, primary: Bool, action: @escaping () -> Void) -> some View {
+        Button(action: action) {
+            Text(label)
+                .font(.system(size: 13, weight: .semibold))
+                .foregroundColor(primary ? pal.onAccent : pal.textPrimary)
+                .padding(.horizontal, 14)
+                .padding(.vertical, 8)
+                .background(RoundedRectangle(cornerRadius: 9).fill(primary ? pal.accent : pal.bgInset))
+                .overlay(RoundedRectangle(cornerRadius: 9).stroke(primary ? Color.clear : pal.border, lineWidth: 1))
+        }
+        .buttonStyle(.plain)
     }
 
     func formatNumber(_ number: Int) -> String {
@@ -1766,22 +2384,16 @@ struct UsageView: View {
     }
 
     func colorForPercentage(_ percentage: Double) -> Color {
-        if percentage < 0.7 {
-            return .green
-        } else if percentage < 0.9 {
-            return .orange
-        } else {
-            return .red
-        }
+        return pal.tierColor(Int(percentage * 100))
     }
 
     func statusColor(for indicator: String) -> Color {
         switch indicator {
-        case "none":     return .green
-        case "minor":    return .yellow
-        case "major":    return .orange
-        case "critical": return .red
-        default:         return .gray
+        case "none":     return Color(hex: 0x35c46b)
+        case "minor":    return pal.lvMid
+        case "major":    return pal.lvHigh
+        case "critical": return pal.lvCrit
+        default:         return pal.textMuted
         }
     }
 
@@ -1861,11 +2473,11 @@ struct UsageView: View {
 
     func badgeColor(for status: String) -> Color {
         switch status {
-        case "investigating": return Color.red.opacity(0.8)
-        case "identified":    return Color.orange
-        case "monitoring":    return Color.blue
-        case "resolved":      return Color.green
-        default:              return Color.gray
+        case "investigating": return pal.lvHigh
+        case "identified":    return pal.lvMid
+        case "monitoring":    return pal.accent
+        case "resolved":      return Color(hex: 0x35c46b)
+        default:              return pal.textMuted
         }
     }
 
